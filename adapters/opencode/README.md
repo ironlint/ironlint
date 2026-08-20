@@ -103,9 +103,10 @@ In addition to file edits, this adapter gates `bash` (the agent's shell tool —
 `tool:"bash"`, command in `args.command`). Commands that would let the agent
 free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
 `.ironlint/scripts/` — are denied (throw, mirroring the exit-2 edit path).
-Ordinary commands are not slowed: a substring pre-filter skips the decision
-entirely for commands that never mention `ironlint` or `.ironlint`. The deny
-decision is shared across every adapter via `ironlint gate-bash`. The branch
+Every Bash command is piped to `ironlint gate-bash` for the decision (no
+per-shim keyword pre-filter — the matcher is the single source of truth, so
+the keyword list can't drift across adapters). The deny decision is shared
+across every adapter via `ironlint gate-bash`. The branch
 runs before the config-existence check, so it fires even in a project with no
 `.ironlint.yml`. See [The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
 for the protected paths and the shell-classification boundary.

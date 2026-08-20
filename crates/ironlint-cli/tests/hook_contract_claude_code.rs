@@ -72,6 +72,55 @@ fn bash_payload(command: &str) -> String {
     .to_string()
 }
 
+// --- W4 pinned fixtures ------------------------------------------------------
+//
+// The happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
+// `adapters/claude-code/fixtures/` (provenance-stamped; see the README there
+// + `common::fixtures`). The fixture pins the SHAPE — keys, extra fields,
+// ordering — while the per-test file path / command is spliced in below. The
+// synthetic builders above stay for malformed/adversarial edge cases. While
+// capture is pending (fixture missing), `load_fixture` logs a loud warning
+// and the synthetic builder is the fallback, so the suites stay green and the
+// gap stays visible.
+
+fn spliced_fixture(
+    harness: &str,
+    name: &str,
+    splice: impl FnOnce(&mut serde_json::Value),
+) -> Option<String> {
+    common::fixtures::load_fixture(harness, name)
+        .unwrap()
+        .map(|fx| {
+            let mut v = fx.payload;
+            splice(&mut v);
+            serde_json::to_string(&v).unwrap()
+        })
+}
+
+fn write_payload_fixture(file: &std::path::Path) -> String {
+    let p = file.to_string_lossy().into_owned();
+    spliced_fixture("claude-code", "write", move |v| {
+        if let Some(ti) = v.get_mut("tool_input").and_then(|t| t.as_object_mut()) {
+            if let Some(fp) = ti.get_mut("file_path") {
+                *fp = serde_json::json!(p);
+            }
+        }
+    })
+    .unwrap_or_else(|| write_payload(file))
+}
+
+fn edit_payload_fixture(file: &std::path::Path) -> String {
+    let p = file.to_string_lossy().into_owned();
+    spliced_fixture("claude-code", "edit", move |v| {
+        if let Some(ti) = v.get_mut("tool_input").and_then(|t| t.as_object_mut()) {
+            if let Some(fp) = ti.get_mut("file_path") {
+                *fp = serde_json::json!(p);
+            }
+        }
+    })
+    .unwrap_or_else(|| edit_payload(file))
+}
+
 #[test]
 fn write_allow_on_exit_0() {
     if !common::hook_tools_available() {
@@ -81,7 +130,7 @@ fn write_allow_on_exit_0() {
     let fx = HookFixture::new(HOOK);
     fx.stub(0, "");
     let file = fx.file("foo.py");
-    fx.run("PreToolUse", &write_payload(&file), &[])
+    fx.run("PreToolUse", &write_payload_fixture(&file), &[])
         .success()
         .code(0);
 }
@@ -98,7 +147,7 @@ fn write_block_on_exit_2_surfaces_message() {
         r#"{"blocks":[{"check":"g","message":"no bare except"}]}"#,
     );
     let file = fx.file("foo.py");
-    fx.run("PreToolUse", &write_payload(&file), &[])
+    fx.run("PreToolUse", &write_payload_fixture(&file), &[])
         .failure()
         .code(2)
         .stderr(predicates::str::contains("no bare except"));
@@ -114,7 +163,7 @@ fn edit_allow_on_exit_0() {
     fx.stub(0, "");
     let file = fx.file("foo.py");
     std::fs::write(&file, "OLD\n").unwrap();
-    fx.run("PreToolUse", &edit_payload(&file), &[])
+    fx.run("PreToolUse", &edit_payload_fixture(&file), &[])
         .success()
         .code(0);
 }
@@ -132,7 +181,7 @@ fn edit_block_on_exit_2_surfaces_message() {
     );
     let file = fx.file("foo.py");
     std::fs::write(&file, "OLD\n").unwrap();
-    fx.run("PreToolUse", &edit_payload(&file), &[])
+    fx.run("PreToolUse", &edit_payload_fixture(&file), &[])
         .failure()
         .code(2)
         .stderr(predicates::str::contains("no bare except"));
@@ -147,7 +196,7 @@ fn internal_error_fails_open_by_default() {
     let fx = HookFixture::new(HOOK);
     fx.stub(3, "");
     let file = fx.file("foo.py");
-    fx.run("PreToolUse", &write_payload(&file), &[])
+    fx.run("PreToolUse", &write_payload_fixture(&file), &[])
         .success()
         .code(0);
 }
@@ -179,7 +228,7 @@ fn untrusted_config_blocks_with_trust_message() {
     let fx = HookFixture::new(HOOK);
     fx.stub(4, "");
     let file = fx.file("foo.py");
-    fx.run("PreToolUse", &write_payload(&file), &[])
+    fx.run("PreToolUse", &write_payload_fixture(&file), &[])
         .failure()
         .code(2)
         .stderr(predicates::str::contains("not trusted"));
@@ -434,7 +483,7 @@ fn edit_on_non_utf8_file_blocks_with_clean_message() {
     fx.stub(0, "");
     let file = fx.file("foo.py");
     std::fs::write(&file, b"\xff\xfe not utf8\n").unwrap();
-    fx.run("PreToolUse", &edit_payload(&file), &[])
+    fx.run("PreToolUse", &edit_payload_fixture(&file), &[])
         .failure()
         .code(2)
         .stderr(predicates::str::contains("decode"))
@@ -462,7 +511,7 @@ fn write_to_scripts_dir_short_circuits_without_check() {
     // PROJECT_ROOT (on macOS $(pwd) resolves /var/folders -> /private/var/folders).
     let project = std::fs::canonicalize(fx.project.path()).unwrap();
     let file = project.join(".ironlint/scripts/lint.sh");
-    fx.run("PreToolUse", &write_payload(&file), &[])
+    fx.run("PreToolUse", &write_payload_fixture(&file), &[])
         .success()
         .code(0);
     assert!(
@@ -485,7 +534,7 @@ fn write_to_nested_scripts_dir_is_gated() {
     fx.stub_capturing(0, "", &capture);
     let project = std::fs::canonicalize(fx.project.path()).unwrap();
     let file = project.join("src/.ironlint/scripts/lint.sh");
-    fx.run("PreToolUse", &write_payload(&file), &[])
+    fx.run("PreToolUse", &write_payload_fixture(&file), &[])
         .success()
         .code(0);
     assert!(
@@ -497,30 +546,31 @@ fn write_to_nested_scripts_dir_is_gated() {
 // --- Bash branch (bash-gate self-trust prevention) ---------------------------
 //
 // The `Bash)` arm runs BEFORE FILE extraction (a Bash event has no
-// file_path; the empty-FILE early-exit would silently allow it). A substring
-// pre-filter (ironlint | .ironlint) skips the spawn for ordinary commands;
-// on a hit, the hook pipes `tool_input.command` to `ironlint gate-bash` and
-// translates exit 0 → allow, exit 2 → block, anything else → fail-closed.
+// file_path; the empty-FILE early-exit would silently allow it). EVERY Bash
+// call pipes `tool_input.command` to `ironlint gate-bash` — no substring
+// pre-filter, so the W3 surface (git-bypass forms, harness install-surface
+// writes, `.git/hooks` protection) always reaches the matcher and no
+// per-shim keyword list can drift. The hook translates exit 0 → allow,
+// exit 2 → block, anything else → fail-closed.
 
-/// `ls` never mentions ironlint → the pre-filter skips the spawn entirely. The
-/// stub is a TRAP: it exits 2, so if the hook wrongly spawned, this would
-/// block. Allow (exit 0) proves the pre-filter short-circuit.
+/// `ls -la` flows through the REAL `ironlint gate-bash` (no pre-filter): the
+/// matcher allows it (exit 0) → the hook allows (exit 0). Proves a benign
+/// command pays the gate and passes through — not a keyword skip.
 #[test]
-fn bash_allows_benign_command() {
+fn bash_allows_benign_command_with_real_binary() {
     if !common::hook_tools_available() {
         eprintln!("skipping: jq/python3 not available");
         return;
     }
-    let fx = HookFixture::new(HOOK);
-    fx.stub(2, "stub should not be called");
-    let _ = fx.file("foo.py"); // ensure the project exists
-    fx.run("PreToolUse", &bash_payload("ls"), &[])
+    let ironlint = assert_cmd::cargo::cargo_bin("ironlint");
+    let fx = common::RealBinFixture::new(HOOK, &ironlint);
+    fx.run("PreToolUse", &bash_payload("ls -la"), &[])
         .success()
         .code(0);
 }
 
-/// `ironlint trust` hits the pre-filter and the stubbed gate-bash exits 2 with
-/// the reason → the hook must deny (exit 2) and surface the reason on stderr.
+/// `ironlint trust` is a block: the stubbed gate-bash exits 2 with the reason
+/// → the hook must deny (exit 2) and surface the reason on stderr.
 #[test]
 fn bash_blocks_ironlint_trust() {
     if !common::hook_tools_available() {
@@ -537,8 +587,8 @@ fn bash_blocks_ironlint_trust() {
         ));
 }
 
-/// A Bash redirect onto `.ironlint.yml` hits the pre-filter (`.ironlint`) and
-/// the stubbed gate-bash exits 2 → block (exit 2).
+/// A Bash redirect onto `.ironlint.yml` is a policy-surface write: the stubbed
+/// gate-bash exits 2 → block (exit 2).
 #[test]
 fn bash_blocks_redirect_to_ironlint_yml() {
     if !common::hook_tools_available() {
@@ -585,4 +635,75 @@ fn bash_blocks_ironlint_trust_with_real_binary() {
         .stderr(predicates::str::contains(
             "ironlint trust must be run by a human",
         ));
+}
+
+/// End-to-end against the REAL `ironlint gate-bash`: a git-floor bypass form
+/// (`--no-verify`) must block through the hook. This is the W3 surface the
+/// removed pre-filter previously starved — an agent's `git commit --no-verify`
+/// now reaches the matcher and is denied (exit 2).
+#[test]
+fn bash_blocks_git_no_verify_with_real_binary() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let ironlint = assert_cmd::cargo::cargo_bin("ironlint");
+    let fx = common::RealBinFixture::new(HOOK, &ironlint);
+    fx.run(
+        "PreToolUse",
+        &bash_payload("git commit --no-verify -m x"),
+        &[],
+    )
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("git commit bypass"));
+}
+
+/// W4 meta-test: every fixture present in `adapters/claude-code/fixtures/`
+/// must load with a parseable provenance header (W4-R3) and carry the fields
+/// hook.sh reads. An EMPTY dir is capture-pending — the loader already
+/// warned; a fixture that fails to load is a hard failure, never a skip.
+#[test]
+fn fixtures_pin_happy_shape_with_provenance() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fixtures = common::fixtures::assert_fixture_dir_provenance("claude-code");
+    for fx in &fixtures {
+        let harness = fx
+            .provenance
+            .get("harness")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        assert_eq!(harness, "claude-code", "provenance must name the harness");
+        let tool = fx
+            .payload
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        assert!(
+            ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"].contains(&tool),
+            "fixture pins unexpected tool {tool:?}"
+        );
+        assert!(
+            fx.payload.get("tool_input").is_some(),
+            "fixture must carry tool_input"
+        );
+    }
+}
+
+/// Round-3 review: the claude suite must NOT silently vacuous-pass forever.
+/// When fixtures exist they are provenance-stamped and shape-checked (above);
+/// when the dir is README-only, capture pending is DECLARED (loud W4-PARTIAL
+/// reminder, pass locally and in CI); when the dir is undeclared-empty
+/// (missing, or no README and no fixtures) it HARD FAILS in CI. See
+/// `common::fixtures::assert_fixture_dir_capture_status`.
+#[test]
+fn claude_fixture_dir_capture_status() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    common::fixtures::assert_fixture_dir_capture_status("claude-code");
 }

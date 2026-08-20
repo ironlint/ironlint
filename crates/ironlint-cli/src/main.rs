@@ -58,6 +58,7 @@ fn main() -> Result<()> {
             no_hook,
             hook_only,
             uninstall,
+            no_git_hook,
             dry_run,
         } => commands::init::run(
             &dir,
@@ -69,6 +70,8 @@ fn main() -> Result<()> {
                 hook_only,
                 uninstall,
                 dry_run,
+                // `--no-hooks` (legacy scaffold-only) implies no git floor.
+                git_hook: !no_git_hook && !no_hook,
             },
         )?,
         Command::Doctor { dir, format } => commands::doctor::run(&dir, format)?,

@@ -89,9 +89,6 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       if (input.tool === "bash") {
         const args = (output.args ?? {}) as { command?: string }
         const command = typeof args.command === "string" ? args.command : ""
-        // Substring pre-filter: ordinary commands (ls, git, cargo) never
-        // mention ironlint or .ironlint, so skip the spawn entirely.
-        if (!command.includes("ironlint") && !command.includes(".ironlint")) return
         let gateExit: number | null = null
         let gateStdout = ""
         try {

@@ -84,11 +84,6 @@ TOOL_NAME=$(echo "${EVENT}" | jq -r '.tool_name // empty')
 # docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
 if [[ "${TOOL_NAME}" == "Bash" ]]; then
   COMMAND=$(echo "${EVENT}" | jq -r '.tool_input.command // empty')
-  # Substring pre-filter: ordinary commands (ls, git, cargo) never mention
-  # ironlint or .ironlint, so skip the spawn entirely — they pay nothing.
-  if [[ "${COMMAND}" != *ironlint* && "${COMMAND}" != *.ironlint* ]]; then
-    exit 0
-  fi
   # `ironlint gate-bash` exits 0 = allow, 2 = block (reason on stdout), else
   # broken. Under `set -e` the command substitution would die on a nonzero
   # exit before we read $?, so capture via the `|| ec=$?` idiom (the same one

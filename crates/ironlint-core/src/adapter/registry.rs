@@ -1,6 +1,6 @@
 use crate::adapter::{AdapterEnv, Harness, HarnessKind};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // --- embedded artifacts (single source of truth = adapters/) -----------------
 const CLAUDE_HOOK: &str = include_str!("../../../../adapters/claude-code/hooks/hook.sh");
@@ -69,6 +69,66 @@ pub(crate) fn codex_build_entry(command: &str) -> Value {
 }
 
 // --- registry ----------------------------------------------------------------
+/// The adapter installation surface gate-bash must protect (W3-R2).
+///
+/// The settings files and plugin dirs the harness specs install into,
+/// expressed as repo-relative / home-relative path forms (prefixes `/p` /
+/// `/h` stripped from a synthetic env). This is the single source of truth
+/// for the gate-bash self-defense blocklist: `ironlint-bash-gate`'s
+/// `ADAPTER_SURFACE_FILES` / `ADAPTER_SURFACE_DIRS` must equal these —
+/// asserted by a parity test in `ironlint-cli` — so a fifth adapter or a
+/// moved install path fails the gate before the classifier silently
+/// under-covers it.
+pub fn adapter_install_surface() -> (Vec<String>, Vec<String>) {
+    let e = AdapterEnv {
+        home: PathBuf::from("/h"),
+        config_home: PathBuf::from("/c"),
+        project_root: PathBuf::from("/p"),
+    };
+    let strip = |p: PathBuf| -> String {
+        let s = p.to_string_lossy().into_owned();
+        if let Some(rest) = s.strip_prefix("/p/") {
+            return rest.to_string();
+        }
+        if let Some(rest) = s.strip_prefix("/h/") {
+            return rest.to_string();
+        }
+        s
+    };
+    let mut files = vec![
+        strip((CLAUDE.settings_local)(&e).expect("claude local settings")),
+        strip((CLAUDE.settings_global)(&e)),
+        strip((CODEX.settings_local)(&e).expect("codex local hooks")),
+        strip((CODEX.settings_global)(&e)),
+    ];
+    let mut dirs: Vec<String> = [
+        (PI.dir_local)(&e),
+        (PI.dir_global)(&e),
+        (OPENCODE.dir_local)(&e),
+        (OPENCODE.dir_global)(&e),
+    ]
+    .into_iter()
+    .flatten()
+    .map(strip)
+    .collect();
+    // The PARENT dirs of the settings files: `rm -rf ~/.claude` deletes the
+    // rail without ever naming the file. gate-bash must block those too, so
+    // the parity set includes each file target's parent directory.
+    for f in &files {
+        if let Some(parent) = Path::new(f).parent() {
+            let parent = parent.to_string_lossy().to_string();
+            if !parent.is_empty() && parent != "." && !dirs.contains(&parent) {
+                dirs.push(parent);
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    dirs.sort();
+    dirs.dedup();
+    (files, dirs)
+}
+
 const CLAUDE: JsonHookSpec = JsonHookSpec {
     settings_local: |e| Some(e.project_root.join(".claude").join("settings.local.json")),
     settings_global: |e| e.home.join(".claude").join("settings.json"),

@@ -1,15 +1,30 @@
 //! The bash-gate matcher: a pure classifier for a Bash command string.
 //!
 //! Decides whether a command an agent wants to run would let it free itself
-//! from ironlint's gate — `ironlint trust`, or a Bash write to the policy
-//! surface (`.ironlint.yml`, `.ironlint/scripts/`). Pure of I/O and state; the
+//! from ironlint's gate — `ironlint trust`, a Bash write to the policy
+//! surface (`.ironlint.yml`, `.ironlint/scripts/`), a Bash write to the
+//! adapter installation surface (the harness settings files / plugin dirs
+//! `init` installs into — W3 harness self-defense), the W1 git pre-commit
+//! floor hook, or a git-floor bypass form (`--no-verify`, `core.hooksPath`).
+//! Pure of I/O and state except the process HOME (used to normalize `~` /
+//! `$HOME` in adapter-surface paths — see `decide_with_home`); the
 //! `ironlint gate-bash` subcommand and the adapter hooks are thin shims
 //! around it. See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
 //!
 //! Threat tier: lazy non-reasoning models. Blocks direct forms + light
-//! de-obfuscation. Variable-substitution indirection is a documented known
-//! gap (catching it needs real shell evaluation — adversarial tier, out of
-//! scope). The test module pins both directions.
+//! de-obfuscation, including git's `GIT_CONFIG_*` env-injection spelling of
+//! `core.hooksPath` (see [`is_git_config_env_escape`]). Variable-substitution
+//! indirection is a documented known gap (catching it needs real shell
+//! evaluation — adversarial tier, out of scope). The test module pins both
+//! directions.
+//!
+//! Residual (W3-R4): home-scoped harness settings (`~/.claude/settings.json`)
+//! sit outside every repo glob's reach, so the agent's *file tools* can edit
+//! them ungated — this module closes only the Bash path. Project-scoped
+//! settings ARE repo paths; a user who wants file-tool coverage adds a normal
+//! check scoping them (the guide suggests it). The git-bypass forms (W3-R3)
+//! share the var-substitution gap and only affect agent Bash tool calls — a
+//! human typing at a terminal is untouched.
 
 #![warn(clippy::cognitive_complexity)]
 
@@ -303,7 +318,7 @@ fn cd_into_policy_then_trust(segs: &[String]) -> bool {
         .any(|s| s == "trust" || s.starts_with("trust "))
 }
 
-/// True if a path token refers to the policy surface: the literal
+/// True if a path token refers to the ironlint policy surface: the literal
 /// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
 /// `.ironlint/scripts/`. Matched on the path string, not the filesystem.
 fn is_policy_path(token: &str) -> bool {
@@ -323,52 +338,387 @@ fn is_policy_path(token: &str) -> bool {
         || token.contains(".ironlint/scripts/")
 }
 
-/// True if the normalized segment writes to the policy surface. Detected via:
-///   - redirect operators targeting a policy path: >, >>, >|, &>, &>>
-///     (bare, start-glued, or end-glued to the preceding arg)
-///   - `tee` writing a policy path
-///   - in-place editors: `sed -i`, `ed`, `perl -i`
-///   - `cp`/`mv`/`install`/`rsync` with a policy path as the DESTINATION
-///   - `dd of=<policy path>` / `sponge <policy path>`
+// ---------------------------------------------------------------------------
+// W3 — harness self-defense: the adapter installation surface + the git floor
+// ---------------------------------------------------------------------------
+//
+// gate-bash already blocks Bash writes to the ironlint policy surface. W3
+// extends the same write-op family to the adapter installation artifacts —
+// the settings files and plugin dirs `ironlint init` writes — plus the W1
+// git pre-commit floor hook. An agent that can `rm ~/.claude/settings.json`
+// or `.git/hooks/pre-commit` through Bash can uninstall its own rail; these
+// paths are protected the same way the policy files are.
+//
+// The sets below mirror `crates/ironlint-core/src/adapter/registry.rs`
+// (`settings_*` / `dir_*` of every adapter). The parity test in ironlint-cli
+// (W3-R2) keeps the two in lockstep — add a fifth adapter there and the gate
+// stops compiling before it silently under-covers it. Skills dirs are NOT in
+// the set: they are skill-install targets, not harness hooks (a removed
+// skill degrades guidance, it does not remove the rail).
+
+/// Repo-relative / home-relative forms of the harness **installation
+/// artifacts**. Files match as a path SUFFIX, which covers the bare
+/// (`.claude/settings.json`), project-relative (`sub/.claude/settings.json`),
+/// and absolute (`/Users/x/.claude/settings.json`) spellings in one arm.
+pub const ADAPTER_SURFACE_FILES: &[&str] = &[
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".codex/hooks.json",
+];
+
+/// Directory install targets; any write UNDER one of these is blocked.
+/// Project-scoped `.pi/extensions` and `.opencode/plugins` (the registry has
+/// no opencode global), home-scoped `~/.pi/agent/extensions`, plus the
+/// PARENT dirs of the settings files (`.claude`, `.codex`) so `rm -rf
+/// ~/.claude` can't delete the rails sideways. Dirs match as full path
+/// components (see [`is_surface_dir`]) so a `.pi/extensions-backup` lookalike
+/// stays writable. The parity test keeps this equal to the registry-derived
+/// set (`adapter_install_surface`, which emits the same parent dirs).
+pub const ADAPTER_SURFACE_DIRS: &[&str] = &[
+    ".claude",
+    ".codex",
+    ".pi/extensions",
+    ".pi/agent/extensions",
+    ".opencode/plugins",
+];
+
+/// The EXECUTABLE subset of [`ADAPTER_SURFACE_DIRS`]: writing a plugin or
+/// hook under one of these installs a rail-bypass executable — the exact W3
+/// self-trust gap (round-2 over-block-1 reconciliation). These gate ALL write
+/// families. The remaining dirs (`.claude`, `.codex` — broad profile dirs
+/// holding skills/agents next to the protected settings FILES) gate only the
+/// DELETION family, so Bash-authored skill files under them stay legal while
+/// `rm -rf ~/.claude` still blocks.
+pub const ADAPTER_SURFACE_EXEC_DIRS: &[&str] = &[
+    ".pi/extensions",
+    ".pi/agent/extensions",
+    ".opencode/plugins",
+];
+
+/// True if a path token refers to an adapter installation FILE — the exact
+/// `settings.json` / `hooks.json` documents. These gate ALL write families;
+/// `~`, `$HOME`, and absolute spellings normalize against the process HOME;
+/// bare project-relative forms match without it. This is the one place the
+/// otherwise-pure classifier reads the environment (the process env is a
+/// legitimate input: gate-bash runs as a spawned process).
+fn is_adapter_surface_file(token: &str, home: Option<&str>) -> bool {
+    let expanded = expand_home(token, home);
+    ADAPTER_SURFACE_FILES.iter().any(|f| expanded.ends_with(f))
+}
+
+/// True if a path token falls under an EXECUTABLE adapter surface dir
+/// (`.pi/extensions`, `.pi/agent/extensions`, `.opencode/plugins`). These
+/// gate ALL write families (round-2 over-block-1 reconciliation — the W3
+/// self-trust surface is executable, not skill-authoring).
+fn is_adapter_surface_exec_dir(token: &str, home: Option<&str>) -> bool {
+    let expanded = expand_home(token, home);
+    ADAPTER_SURFACE_EXEC_DIRS
+        .iter()
+        .any(|d| is_surface_dir(&expanded, d))
+}
+
+/// True if a path token falls under a PROFILE adapter surface dir — the
+/// broad dirs (`.claude`, `.codex`) whose protected settings FILES sit
+/// inside. These gate ONLY the DELETION family: Bash-authoring a skill file
+/// under `.claude/` is a legitimate edit, but `rm -rf`/`chmod` of the whole
+/// dir (or a file in it) deletes the rail (round-2 over-block 1). Derived as
+/// `ADAPTER_SURFACE_DIRS` minus the exec subset so new registry dirs default
+/// to deletion-only and the W3-R2 parity test still covers the union.
+fn is_adapter_surface_profile_dir(token: &str, home: Option<&str>) -> bool {
+    let expanded = expand_home(token, home);
+    ADAPTER_SURFACE_DIRS
+        .iter()
+        .filter(|d| !ADAPTER_SURFACE_EXEC_DIRS.contains(d))
+        .any(|d| is_surface_dir(&expanded, d))
+}
+
+/// `~`/`$HOME` normalization: a leading `~`, or the FIRST `~/` / `$HOME/`
+/// occurrence (a token like `>~/.claude/settings.json` has the tilder
+/// mid-token after the redirect op — normalize() has already stripped
+/// quotes). `home=None` leaves the token as-is: bare project-relative forms
+/// still match project-scoped surfaces.
+fn expand_home(token: &str, home: Option<&str>) -> String {
+    let Some(h) = home else {
+        return token.to_string();
+    };
+    if let Some(rest) = token.strip_prefix('~') {
+        return format!("{h}{rest}");
+    }
+    for needle in ["~/", "$HOME/"] {
+        if let Some(i) = token.find(needle) {
+            let mut out = String::with_capacity(token.len() + h.len());
+            out.push_str(&token[..i]);
+            out.push_str(h);
+            out.push('/');
+            out.push_str(&token[i + needle.len()..]);
+            return out;
+        }
+    }
+    token.to_string()
+}
+
+/// Directory-form matching: the token IS `dir`, sits under it, or carries it
+/// as a full path component (absolute spellings end with `/{dir}`).
+/// `.pi/extensions-backup` must NOT match — no `/` boundary after the dir.
+fn is_surface_dir(token: &str, dir: &str) -> bool {
+    token == dir
+        || token.starts_with(&format!("{dir}/"))
+        || token.ends_with(&format!("/{dir}"))
+        || token.contains(&format!("/{dir}/"))
+}
+
+/// The W1 git pre-commit floor hook is protected the same way: an agent must
+/// not remove, chmod, or overwrite its own commit-boundary rail (W3-R3).
+/// Suffix match covers the bare `.git/hooks/pre-commit` and any absolute
+/// spelling; linked-worktree hooks live under `.git/worktrees/*/hooks/` in
+/// the repo, still `.git/...`-prefixed.
+fn is_floor_hook_path(token: &str) -> bool {
+    token.ends_with(".git/hooks/pre-commit")
+        || (token.ends_with('*') && token.contains(".git/hooks/pre-commit"))
+}
+
+/// True if a path token refers to any protected FILE: the ironlint policy
+/// files, the adapter installation files, or the git floor hook. These exact
+/// files gate ALL write families (redirect, tee, cp/mv dest, editors,
+/// deletion).
+fn is_protected_path(token: &str, home: Option<&str>) -> bool {
+    is_policy_path(token)
+        || is_adapter_surface_file(token, home)
+        || is_floor_hook_path(token)
+        || is_adapter_surface_exec_dir(token, home)
+}
+
+/// The DELETION family (rm/rmdir/chmod/chown/unlink/truncate) and `mv`-source
+/// additionally protect whole DIRECTORY surfaces — including `.git/hooks`, the
+/// floor hook's parent (`rm -rf .git/hooks` removes the rail without ever
+/// naming pre-commit, round-2 finding 4). Content-write families (`>`, cp
+/// dest, editors) deliberately exclude dirs: authoring a file under a surface
+/// dir via Bash stays legal (round-2 over-block 1).
+fn is_delete_target_protected(token: &str, home: Option<&str>) -> bool {
+    is_protected_path(token, home)
+        || is_adapter_surface_profile_dir(token, home)
+        || is_surface_dir(&expand_home(token, home), ".git/hooks")
+}
+
+/// W3-R3 git-floor bypass forms: `git commit --no-verify`, `git -c
+/// core.hooksPath=… commit`, `git config core.hooksPath …` — the lazy-agent
+/// escapes from the commit-boundary rail (with W1 shipped, `--no-verify` IS
+/// the obvious escape). Only fires on agent Bash tool calls; a human typing
+/// at a terminal is untouched. Shares the documented var-substitution gap.
+fn is_git_commit_escape(segment: &str) -> bool {
+    // Wrapper prefixes (`env`, leading VAR=val, `nohup`, `timeout <N>`,
+    // `sh -c`) must not shelter the bypass (2026-08-20 review): strip them
+    // before tokenizing, mirroring the trust detector.
+    let stripped = strip_wrappers(segment);
+    let tokens: Vec<&str> = stripped.split_whitespace().collect();
+    if tokens.first() != Some(&"git") {
+        return false;
+    }
+    let sub = git_subcommand(&tokens);
+    for (i, t) in tokens.iter().enumerate() {
+        match *t {
+            // Long form covers EVERY hook-running subcommand.
+            "--no-verify" => return true,
+            // Commit's short verify is a single-dash bundle containing `n`
+            // (`-n`, `-qn`). ONLY commit: for merge/pull `-n` is `--no-stat`,
+            // for cherry-pick/revert `--no-commit` (round-2 finding 5). The
+            // bundle scan stops n-detection after value-taking letters so
+            // `-cuser.name=x` never false-blocks (round-2 finding 3).
+            t if sub == Some("commit")
+                && t.starts_with('-')
+                && !t.starts_with("--")
+                && t.len() > 1
+                && short_bundle_has_verify(t) =>
+            {
+                return true;
+            }
+            // `-c core.hooksPath=…` config injection (mutating -- it re-routes
+            // hooks for the invocation).
+            "-c" if tokens
+                .get(i + 1)
+                .is_some_and(|v| v.to_lowercase().contains("core.hookspath")) =>
+            {
+                return true;
+            }
+            // Glued `-ccore.hooksPath=…` (keys are case-insensitive).
+            t if t.starts_with("-c")
+                && t.len() > 2
+                && t.to_lowercase().contains("core.hookspath") =>
+            {
+                return true;
+            }
+            "config" if config_mutates_hooks_path(&tokens) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Git's `GIT_CONFIG_*` env vars are the documented-feature equivalent of the
+/// `-c <key>=<value>` spellings already blocked in [`is_git_commit_escape`]:
+/// `GIT_CONFIG_COUNT=n` plus `GIT_CONFIG_KEY_i`/`GIT_CONFIG_VALUE_i` inject
+/// config pairs, and `GIT_CONFIG_PARAMETERS` carries a pre-encoded `-c` list.
+/// `env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git commit -m x`
+/// re-routes the commit floor with no visible `-c`/`config` token, so match
+/// the KEY-CARRYING var directly: block when the assignment token names
+/// `core.hooksPath` (case-insensitive).
 ///
-/// A policy path as a SOURCE (e.g. `cp .ironlint.yml /tmp/backup`,
+/// Scoped to the assignment token, so the COUNT/VALUE companions and an
+/// innocent `GIT_CONFIG_GLOBAL=<file>` stay allowed — the former carry only a
+/// count/path value, the latter redirects the global config FILE, not the
+/// hooks path. Mirrors [`config_mutates_hooks_path`]'s read/write split: no
+/// `core.hooksPath` inside the injecting var, no re-route.
+fn is_git_config_env_escape(segment: &str) -> bool {
+    // The env spelling only injects when the segment actually invokes git AND
+    // the assignment precedes the git binary (2026-08-20 review): after it,
+    // the token is an argument (a config VALUE, an echo payload) — not
+    // environment.
+    if strip_wrappers(segment).split_whitespace().next() != Some("git") {
+        return false;
+    }
+    segment
+        .split_whitespace()
+        .take_while(|t| *t != "git")
+        .any(|t| {
+            let lower = t.to_lowercase();
+            (lower.starts_with("git_config_key_") || lower.starts_with("git_config_parameters"))
+                && lower.contains("core.hookspath")
+        })
+}
+
+/// True if a single-dash short-flag bundle contains `-n` (git commit's
+/// `--no-verify`) before any value-taking flag, whose value would otherwise be
+/// scanned for `n`. `-qn` = `-q -n` matches; `-cuser.name=chris` and `-m msg`
+/// do NOT.
+fn short_bundle_has_verify(bundle: &str) -> bool {
+    for ch in bundle[1..].chars() {
+        match ch {
+            'n' => return true,
+            'c' | 'C' | 'm' | 'M' | 'F' | 'o' | 'O' => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// True if the `git config` invocation MUTATES `core.hooksPath` (a
+/// case-insensitive key). Reads — `--get`, `--get-all`, or a bare
+/// `config core.hooksPath` with no value — stay allowed (round-2 over-block
+/// 2); only value assignment and the mutating sub-options block.
+fn config_mutates_hooks_path(tokens: &[&str]) -> bool {
+    let Some(ci) = tokens.iter().position(|t| *t == "config") else {
+        return false;
+    };
+    let after = &tokens[ci + 1..];
+    let mutating_flag = after.iter().any(|t| {
+        matches!(
+            *t,
+            "--add" | "--unset" | "--unset-all" | "--rename-section" | "--remove-section"
+        )
+    });
+    if mutating_flag {
+        // Mutating flags block only when the key IS core.hooksPath —
+        // `--unset user.name` is not a floor re-route (2026-08-20 review).
+        return after.iter().any(|t| t.to_lowercase() == "core.hookspath");
+    }
+    // A bare key followed by a non-flag value is a plain set (`git config k v`).
+    for (i, t) in after.iter().enumerate() {
+        if t.to_lowercase() == "core.hookspath"
+            && after.get(i + 1).is_some_and(|n| !n.starts_with('-'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The first non-flag token AFTER the `git` binary — the subcommand. Skips
+/// value-taking adjustments (`-c`/`-C`/`--config`) AND their values, so a
+/// `-c key=val` before the subcommand resolves correctly
+/// (`git -c user.name=x commit` -> `commit`, round-2 finding 1).
+fn git_subcommand<'a>(tokens: &[&'a str]) -> Option<&'a str> {
+    let mut i = 1;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if matches!(t, "-c" | "-C" | "--config") {
+            i += 2; // skip the flag and its value
+            continue;
+        }
+        if t.starts_with('-') {
+            i += 1; // other flag, no value
+            continue;
+        }
+        return Some(t);
+    }
+    None
+}
+
+/// `rm`/`chmod`/`chown`/`rmdir` targeting a protected path — deletion and
+/// permission changes are the most direct way to uninstall a rail (the
+/// redirect/tee/editor family only covers content writes). Any non-flag
+/// argument that names a protected path blocks; `chmod 755 file` and
+/// `chmod +x file` skip their mode operand naturally (it is not a path).
+fn rm_chmod_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
+    let Some(&cmd) = tokens.first() else {
+        return false;
+    };
+    matches!(
+        cmd,
+        "rm" | "chmod" | "chown" | "rmdir" | "unlink" | "truncate"
+    ) && tokens
+        .iter()
+        .skip(1)
+        .any(|t| !t.starts_with('-') && is_delete_target_protected(t, home))
+}
+
+/// True if the normalized segment writes to a protected surface. Detected via:
+///   - redirect operators targeting a protected path: >, >>, >|, &>, &>>
+///     (bare, start-glued, or end-glued to the preceding arg)
+///   - `tee` writing a protected path
+///   - in-place editors: `sed -i`, `ed`, `perl -i`
+///   - `cp`/`mv`/`install`/`rsync` with a protected path as the DESTINATION
+///   - `dd of=<protected path>` / `sponge <protected path>`
+///   - `rm`/`chmod`/`chown`/`rmdir` naming a protected path
+///
+/// A protected path as a SOURCE (e.g. `cp ~/.claude/settings.json /tmp/backup`,
 /// `dd if=.ironlint.yml of=/tmp/backup`) is a read and MUST allow — only the
 /// destination is checked.
-fn is_policy_write(segment: &str) -> bool {
+fn is_protected_write(segment: &str, home: Option<&str>) -> bool {
     let tokens: Vec<&str> = segment.split_whitespace().collect();
 
-    redirect_targets_policy(&tokens)
-        || tee_targets_policy(&tokens)
-        || inplace_editor_targets_policy(&tokens)
-        || cp_mv_destination_is_policy(&tokens)
-        || dd_targets_policy(&tokens)
-        || sponge_targets_policy(&tokens)
+    redirect_targets_protected(&tokens, home)
+        || tee_targets_protected(&tokens, home)
+        || inplace_editor_targets_protected(&tokens, home)
+        || cp_mv_destination_is_protected(&tokens, home)
+        || dd_targets_protected(&tokens, home)
+        || sponge_targets_protected(&tokens, home)
+        || rm_chmod_targets_protected(&tokens, home)
 }
 
 /// The redirect operators we gate, longest-first so `>>` is tried before `>`.
 const REDIRECT_OPS: &[&str] = &["&>>", ">>", "&>", ">|", ">"];
 
-/// Redirect operators targeting a policy path. Three forms:
+/// Redirect operators targeting a protected path. Three forms:
 ///   - bare operator + next token: `> .ironlint.yml`
 ///   - operator glued to the START of a token: `>.ironlint.yml`
 ///   - operator glued to the END of a preceding arg: `echo x>.ironlint.yml`
 ///     (the most common form a model emits — no space before the `>`).
-fn redirect_targets_policy(tokens: &[&str]) -> bool {
+fn redirect_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
     for (i, t) in tokens.iter().enumerate() {
         // Bare operator: `> .ironlint.yml` — the NEXT token is the target.
         if REDIRECT_OPS.contains(t) {
             if let Some(next) = tokens.get(i + 1) {
-                if is_policy_path(next) {
+                if is_protected_path(next, home) {
                     return true;
                 }
             }
         }
         // Glued (start OR end): a token that contains a redirect op AND ends
-        // with a policy path. `>.ironlint.yml` and `x>.ironlint.yml` both
+        // with a protected path. `>.ironlint.yml` and `x>.ironlint.yml` both
         // satisfy `ends_with(".ironlint.yml")` and contain a redirect op, so one
         // check covers both — no need to split the token. Skip the bare-op
         // tokens (handled above) to avoid a double-count false signal.
-        if !REDIRECT_OPS.contains(t) && contains_redirect_op(t) && is_policy_path(t) {
+        if !REDIRECT_OPS.contains(t) && contains_redirect_op(t) && is_protected_path(t, home) {
             return true;
         }
     }
@@ -385,10 +735,10 @@ fn contains_redirect_op(token: &str) -> bool {
 /// `tee` / `tee -a`: a later argument is the destination file. `tee` may
 /// appear after a pipe (`echo x | tee .ironlint.yml`), so scan for it as any
 /// token, then check the non-flag arguments that follow it.
-fn tee_targets_policy(tokens: &[&str]) -> bool {
+fn tee_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
     let mut seen_tee = false;
     for t in tokens {
-        if seen_tee && !t.starts_with('-') && is_policy_path(t) {
+        if seen_tee && !t.starts_with('-') && is_protected_path(t, home) {
             return true;
         }
         if *t == "tee" {
@@ -401,7 +751,7 @@ fn tee_targets_policy(tokens: &[&str]) -> bool {
 /// In-place editors: `sed -i ... <file>`, `ed -s <file>`, `perl -i ... <file>`.
 /// The last non-flag argument is the target file. Only block if `-i` is
 /// present (sed/perl) or it's `ed` (which edits in place by nature).
-fn inplace_editor_targets_policy(tokens: &[&str]) -> bool {
+fn inplace_editor_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
     let Some(&cmd) = tokens.first() else {
         return false;
     };
@@ -416,7 +766,10 @@ fn inplace_editor_targets_policy(tokens: &[&str]) -> bool {
         }
         _ => false,
     };
-    inplace && tokens.last().is_some_and(|last| is_policy_path(last))
+    inplace
+        && tokens
+            .last()
+            .is_some_and(|last| is_protected_path(last, home))
 }
 
 /// True if any token is exactly `-i` (the bare in-place flag).
@@ -429,25 +782,38 @@ fn has_dash_i_prefixed_flag(tokens: &[&str]) -> bool {
     tokens.iter().any(|t| t.starts_with("-i") && *t != "-i")
 }
 
-/// `cp`/`mv`/`install`/`rsync` with a policy path as the DESTINATION. The
+/// `cp`/`mv`/`install`/`rsync` with a protected path as the DESTINATION. The
 /// destination is the last argument (for both two-arg and multi-source forms).
-/// A policy path as a SOURCE (e.g. `cp .ironlint.yml /tmp/backup`) MUST
-/// allow — that's why only the last token is checked. `install` and `rsync`
-/// share the cp/mv destination semantics for our purposes.
-fn cp_mv_destination_is_policy(tokens: &[&str]) -> bool {
+/// A protected path as a SOURCE (e.g. `cp ~/.claude/settings.json /tmp/backup`)
+/// MUST allow — that's why only the last token is checked. `install` and
+/// `rsync` share the cp/mv destination semantics for our purposes.
+fn cp_mv_destination_is_protected(tokens: &[&str], home: Option<&str>) -> bool {
     let Some(&cmd) = tokens.first() else {
         return false;
     };
+    let dest_protected = tokens
+        .last()
+        .is_some_and(|dest| is_protected_path(dest, home));
+    // `mv` MOVES the rail away: a protected SOURCE is as destructive as a
+    // protected destination. `cp`/`install`/`rsync` read the source, so for
+    // them only the destination matters.
+    // `mv` MOVES the rail away: a protected SOURCE is as destructive as a
+    // protected destination. Matches files + exec dirs (not profile dirs:
+    // relocating a skill file out of `.claude/` is benign).
+    let mv_source_protected = cmd == "mv"
+        && tokens
+            .get(1..tokens.len().saturating_sub(1))
+            .is_some_and(|srcs| srcs.iter().any(|s| is_protected_path(s, home)));
     matches!(cmd, "cp" | "mv" | "install" | "rsync")
         && tokens.len() >= 3
-        && tokens.last().is_some_and(|dest| is_policy_path(dest))
+        && (dest_protected || mv_source_protected)
 }
 
-/// `dd of=<policy path>`: dd writes via its `of=` operand, not a positional
-/// arg. Block if any token is `of=<policy path>` OR `of` followed by a policy
-/// path token. `dd if=.ironlint.yml of=/tmp/backup` (policy as INPUT) MUST
-/// allow — only the `of=` destination is checked.
-fn dd_targets_policy(tokens: &[&str]) -> bool {
+/// `dd of=<protected path>`: dd writes via its `of=` operand, not a positional
+/// arg. Block if any token is `of=<protected path>` OR `of` followed by a
+/// protected path token. `dd if=.ironlint.yml of=/tmp/backup` (protected as
+/// INPUT) MUST allow — only the `of=` destination is checked.
+fn dd_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
     let is_dd = tokens.first().is_some_and(|c| *c == "dd");
     if !is_dd {
         return false;
@@ -455,14 +821,14 @@ fn dd_targets_policy(tokens: &[&str]) -> bool {
     for (i, t) in tokens.iter().enumerate() {
         // Glued: `of=.ironlint.yml`.
         if let Some(rest) = t.strip_prefix("of=") {
-            if is_policy_path(rest) {
+            if is_protected_path(rest, home) {
                 return true;
             }
         }
         // Separated: `of .ironlint.yml`.
         if *t == "of" {
             if let Some(next) = tokens.get(i + 1) {
-                if is_policy_path(next) {
+                if is_protected_path(next, home) {
                     return true;
                 }
             }
@@ -472,21 +838,39 @@ fn dd_targets_policy(tokens: &[&str]) -> bool {
 }
 
 /// `sponge <file>` (from moreutils): writes its stdin to a file. The file is
-/// the LAST argument. `echo x | sponge .ironlint.yml` is a policy write.
-fn sponge_targets_policy(tokens: &[&str]) -> bool {
+/// the LAST argument. `echo x | sponge .ironlint.yml` is a protected write.
+fn sponge_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
     let is_sponge = tokens.first().is_some_and(|c| *c == "sponge");
-    is_sponge && tokens.last().is_some_and(|last| is_policy_path(last))
+    is_sponge
+        && tokens
+            .last()
+            .is_some_and(|last| is_protected_path(last, home))
 }
+
+/// Decided block reason for a protected-surface write.
+const PROTECTED_WRITE_REASON: &str = "ironlint policy files must be edited through the Write/Edit tool (which is gated), not via Bash — harness/plugin files and the git hook are protected the same way";
+
+/// Decided block reason for a git-floor bypass form.
+const GIT_ESCAPE_REASON: &str = "git commit bypass (--no-verify / core.hooksPath) and .git/hooks/pre-commit writes are blocked: they would remove the ironlint floor";
 
 /// Decide whether `command` may run.
 ///
-/// Pure: no I/O, no state. Returns `Block(reason)` for `ironlint trust` (any
-/// args, in any command segment) and Bash writes to the policy surface;
-/// `Allow` otherwise, including the documented indirection gap (which is
-/// *intentionally* allowed). A `trust` or policy write in ANY segment of a
+/// Pure except for the process HOME (used to normalize `~`/`$HOME` in
+/// adapter-surface paths — see [`decide_with_home`]). Returns
+/// `Block(reason)` for `ironlint trust` (any args, in any command segment),
+/// Bash writes to the protected surface (policy files, adapter installation
+/// artifacts, the git floor hook), and git-floor bypass forms; `Allow`
+/// otherwise, including the documented indirection gap (which is
+/// *intentionally* allowed). A `trust` or protected write in ANY segment of a
 /// chained command (`a && ironlint trust`, `check || trust`) blocks — the
 /// whole command is denied.
 pub fn decide(command: &str) -> Decision {
+    decide_with_home(command, std::env::var("HOME").ok().as_deref())
+}
+
+/// [`decide`] with an explicit HOME, so tests can normalize `~`/`$HOME`
+/// against a controlled path instead of the process environment.
+pub fn decide_with_home(command: &str, home: Option<&str>) -> Decision {
     let n = normalize(command);
     let segs = segments(&n);
 
@@ -501,11 +885,14 @@ pub fn decide(command: &str) -> Decision {
         if is_ironlint_trust(seg) {
             return Decision::Block(TRUST_REASON.to_string());
         }
-        if is_policy_write(seg) {
-            return Decision::Block(
-                "ironlint policy files must be edited through the Write/Edit tool (which is gated), not via Bash"
-                    .to_string(),
-            );
+        if is_protected_write(seg, home) {
+            return Decision::Block(PROTECTED_WRITE_REASON.to_string());
+        }
+        if is_git_commit_escape(seg) {
+            return Decision::Block(GIT_ESCAPE_REASON.to_string());
+        }
+        if is_git_config_env_escape(seg) {
+            return Decision::Block(GIT_ESCAPE_REASON.to_string());
         }
     }
     Decision::Allow
@@ -513,7 +900,7 @@ pub fn decide(command: &str) -> Decision {
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, Decision};
+    use super::{decide, decide_with_home, Decision};
 
     /// Assert `decide(cmd)` blocks; the reason is checked loosely (caller
     /// cares that it blocked, not the exact wording).
@@ -804,8 +1191,8 @@ mod tests {
         assert_allows("echo x | tee /tmp/log");
     }
 
-    // --- ordinary commands never mention ironlint, so the pre-filter skips
-    //     them entirely; pin that decide() also allows them if reached ---
+    // --- every Bash tool call reaches decide(); pin ordinary commands
+    //     allow through the gate (no more pre-filter skipping) ---
     #[test]
     fn allows_cargo_test() {
         assert_allows("cargo test");
@@ -1247,5 +1634,452 @@ mod tests {
     #[test]
     fn blocks_ironlint_check_comma_ironlint_trust() {
         assert_blocks("ironlint check, ironlint trust");
+    }
+
+    // =====================================================================
+    // W3 — harness self-defense: adapter installation surface + git floor
+    // (specs/2026-08-17-git-floor-hook-and-self-defense-design.md).
+    // =====================================================================
+    //
+    // The adapter installation artifacts (settings files + plugin dirs the
+    // `init` onboarding writes) and the W1 git pre-commit floor hook are
+    // protected exactly like the ironlint policy surface. decide_with_home
+    // is exercised with an explicit HOME so the ~/$HOME normalization is
+    // pinned independent of the machine running the tests.
+
+    // --- every surface FILE x every write op x every spelling ---
+    #[test]
+    fn blocks_redirect_to_home_claude_settings() {
+        assert_blocks("echo x > ~/.claude/settings.json");
+        assert_blocks("echo x > $HOME/.claude/settings.json");
+        assert_blocks("echo x > /Users/t/.claude/settings.json");
+        assert_blocks("echo x > .claude/settings.json");
+        assert_blocks("echo x > sub/.claude/settings.json");
+    }
+
+    #[test]
+    fn blocks_append_to_home_claude_settings() {
+        assert_blocks("echo x >> ~/.claude/settings.json");
+        assert_blocks("echo x >> $HOME/.claude/settings.json");
+        assert_blocks("echo x >> /Users/t/.claude/settings.json");
+        assert_blocks("echo x >> .claude/settings.json");
+    }
+
+    #[test]
+    fn blocks_clobber_to_claude_settings_local() {
+        assert_blocks("echo x >| ~/.claude/settings.local.json");
+        assert_blocks("echo x >| .claude/settings.local.json");
+        assert_blocks("echo x >| /Users/t/.claude/settings.local.json");
+    }
+
+    #[test]
+    fn blocks_end_glued_redirect_to_claude_settings() {
+        assert_blocks("echo x>~/.claude/settings.json");
+        assert_blocks("echo x>$HOME/.claude/settings.json");
+        assert_blocks("echo x>.claude/settings.json");
+    }
+
+    #[test]
+    fn blocks_tee_to_codex_hooks() {
+        assert_blocks("echo x | tee ~/.codex/hooks.json");
+        assert_blocks("echo x | tee $HOME/.codex/hooks.json");
+        assert_blocks("echo x | tee -a .codex/hooks.json");
+        assert_blocks("echo x | tee /Users/t/.codex/hooks.json");
+    }
+
+    #[test]
+    fn blocks_sed_inplace_on_surface_file() {
+        assert_blocks("sed -i s/x/y/ ~/.claude/settings.json");
+        assert_blocks("sed -i s/x/y/ .claude/settings.local.json");
+        assert_blocks("perl -i -pe s/x/y/ $HOME/.codex/hooks.json");
+    }
+
+    #[test]
+    fn blocks_cp_mv_install_rsync_onto_surface() {
+        assert_blocks("cp /tmp/backup ~/.claude/settings.json");
+        assert_blocks("mv /tmp/backup .claude/settings.json");
+        assert_blocks("install /tmp/backup $HOME/.claude/settings.json");
+        assert_blocks("rsync /tmp/backup /Users/t/.codex/hooks.json");
+    }
+
+    #[test]
+    fn blocks_dd_rm_chmod_on_surface() {
+        assert_blocks("dd if=x of=~/.claude/settings.json");
+        assert_blocks("rm ~/.claude/settings.json");
+        assert_blocks("rm -rf .claude/settings.local.json");
+        assert_blocks("chmod 777 $HOME/.claude/settings.json");
+        assert_blocks("chmod +x .codex/hooks.json");
+    }
+
+    // --- every surface DIR x every spelling ---
+    #[test]
+    fn blocks_writes_under_pi_extensions() {
+        assert_blocks("echo x > .pi/extensions/foo.js");
+        assert_blocks("tee x .pi/extensions/foo.js < /dev/null");
+        assert_blocks("rm -rf .pi/extensions");
+        assert_blocks("echo x > /Users/t/.pi/extensions/foo.js");
+        assert_blocks("chmod 777 .pi/extensions/hook.js");
+    }
+
+    #[test]
+    fn blocks_writes_under_home_pi_agent_extensions() {
+        assert_blocks("echo x > ~/.pi/agent/extensions/foo.js");
+        assert_blocks("echo x > $HOME/.pi/agent/extensions/foo.js");
+        assert_blocks("rm -rf ~/.pi/agent/extensions");
+        assert_blocks("echo x > /Users/t/.pi/agent/extensions/hook.js");
+    }
+
+    #[test]
+    fn blocks_writes_under_opencode_plugins() {
+        assert_blocks("echo x > .opencode/plugins/plugin.js");
+        assert_blocks("rm -rf .opencode/plugins");
+        assert_blocks("sed -i s/x/y/ .opencode/plugins/index.js");
+    }
+
+    // --- git floor hook (W1) + git-bypass forms (W3-R3) ---
+    #[test]
+    fn blocks_writes_to_git_floor_hook() {
+        assert_blocks("rm .git/hooks/pre-commit");
+        assert_blocks("rm -f /Users/t/repo/.git/hooks/pre-commit");
+        assert_blocks("chmod -x .git/hooks/pre-commit");
+        assert_blocks("echo x > .git/hooks/pre-commit");
+        assert_blocks("cp /tmp/other .git/hooks/pre-commit");
+    }
+
+    #[test]
+    fn blocks_git_commit_no_verify() {
+        assert_blocks("git commit --no-verify -m x");
+        assert_blocks("git commit -m x --no-verify");
+    }
+
+    // Review finding (2026-08-20): wrapper prefixes (`env`, leading VAR=val,
+    // `nohup`, `timeout`, `sh -c`) must not shelter the bypass — the detector
+    // strips wrappers before tokenizing.
+    #[test]
+    fn blocks_git_commit_no_verify_through_wrappers() {
+        assert_blocks("env git commit --no-verify -m x");
+        assert_blocks("FOO=1 git commit --no-verify -m x");
+        assert_blocks("nohup git commit --no-verify -m x");
+        assert_blocks("nohup git -c core.hooksPath=/t commit");
+        assert_blocks("timeout 10 git commit -n -m x");
+        assert_blocks("sh -c 'git commit --no-verify -m x'");
+        assert_blocks("exec git commit --no-verify -m x");
+    }
+
+    #[test]
+    fn blocks_git_c_core_hooks_path() {
+        assert_blocks("git -c core.hooksPath=/tmp/x commit -m x");
+        assert_blocks("git -c core.hooksPath=/tmp/x status");
+    }
+
+    #[test]
+    fn blocks_git_config_core_hooks_path() {
+        assert_blocks("git config core.hooksPath /tmp/x");
+        assert_blocks("git config core.hooksPath /tmp/x && git commit -m y");
+        assert_blocks("git config --unset core.hooksPath");
+    }
+
+    // Review finding (2026-08-20): mutating `git config` flags block only
+    // when the key IS core.hooksPath — `--unset user.name` is not a floor
+    // re-route and must stay allowed.
+    #[test]
+    fn allows_git_config_mutations_on_other_keys() {
+        assert_allows("git config --unset user.name");
+        assert_allows("git config --add alias.st status");
+        assert_allows("git config --unset-all alias.st");
+        assert_allows("git config --rename-section user foo");
+    }
+
+    // Review finding (2026-08-20): the GIT_CONFIG_* hookspath token only
+    // injects env when it precedes the git binary; an echo of the string or
+    // a config VALUE carrying it is not an injection.
+    #[test]
+    fn allows_git_config_env_token_outside_git_invocation() {
+        assert_allows("echo GIT_CONFIG_KEY_0=core.hooksPath");
+        assert_allows("git config alias.foo GIT_CONFIG_KEY_0=core.hooksPath");
+    }
+
+    // GIT_CONFIG_* env injection is git's env spelling of `-c`/`config`: the
+    // KEY segment of the COUNT/KEY/VALUE triple carries `core.hooksPath`, so
+    // block on the KEY (and PARAMETERS) token with no visible `-c`/`config`.
+    #[test]
+    fn blocks_git_config_env_injection() {
+        assert_blocks(
+            "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git commit -m x",
+        );
+        assert_blocks(
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git commit -m x",
+        );
+        assert_blocks("GIT_CONFIG_KEY_0=core.hooksPath git commit -m x");
+        assert_blocks("GIT_CONFIG_KEY_7=core.HooksPath GIT_CONFIG_COUNT=8 git commit -m x");
+        assert_blocks("GIT_CONFIG_PARAMETERS='core.hooksPath=/tmp/x' git commit -m x");
+        assert_blocks("GIT_CONFIG_PARAMETERS=core.hooksPath=/tmp/x git commit -m x");
+    }
+
+    // Narrow scope: a GIT_CONFIG_* var that does NOT name core.hooksPath is
+    // not a floor re-route. COUNT/VALUE carry a count/path value; GLOBAL
+    // redirects the global config FILE — all stay allowed, including a
+    // hooksPath READ alongside an innocent GLOBAL redirect.
+    #[test]
+    fn allows_git_config_env_injection_without_hooks_path() {
+        assert_allows("GIT_CONFIG_COUNT=1 git commit -m x");
+        assert_allows("GIT_CONFIG_VALUE_0=/tmp/x git commit -m x");
+        assert_allows("GIT_CONFIG_GLOBAL=/dev/null git status");
+        assert_allows("GIT_CONFIG_GLOBAL=/dev/null git config --get core.hooksPath");
+    }
+
+    // Review finding (2026-08-17): `-n` is git's short form of `--no-verify`
+    // for hook-running subcommands — an agent blocked on `--no-verify` just
+    // re-emits `-n`. But `git log -n 5` (a count) must stay allowed.
+    #[test]
+    fn blocks_git_commit_dash_n_short_verify() {
+        assert_blocks("git commit -n -m x");
+    }
+
+    // Round-2 review finding 5: only `commit`'s `-n` is `--no-verify`. For
+    // merge/pull `-n` is `--no-stat`; for cherry-pick/revert it's
+    // `--no-commit` — all benign. Long-form `--no-verify` must still block for
+    // every hook-running subcommand (covered in the `blocks_git_commit_*_verify`
+    // tests + below).
+    #[test]
+    fn allows_git_dash_n_for_non_commit_subcommands() {
+        assert_allows("git merge -n");
+        assert_allows("git pull -n");
+        assert_allows("git cherry-pick -n");
+        assert_allows("git revert -n");
+    }
+
+    #[test]
+    fn blocks_git_no_verify_long_form_for_all_hook_subcommands() {
+        assert_blocks("git commit --no-verify -m x");
+        assert_blocks("git merge --no-verify");
+        assert_blocks("git cherry-pick --no-verify");
+        assert_blocks("git revert --no-verify");
+        assert_blocks("git pull --no-verify");
+    }
+
+    // Round-2 finding 1: `git_subcommand` must skip value-taking flags
+    // (`-c`/`-C`/`--config`) AND their values, or the `-n` arm checks the
+    // flag's value (`user.name=x`) instead of `commit`.
+    #[test]
+    fn blocks_git_commit_dash_n_with_c_c_value_flags() {
+        assert_blocks("git -c user.name=x commit -n -m x");
+        assert_blocks("git -C /tmp commit -n");
+        assert_blocks("git --config user.name=x commit -n -m x");
+    }
+
+    #[test]
+    fn allows_git_log_dash_n_with_c_c_value_flags() {
+        assert_allows("git -c user.name=x log -n 5");
+        assert_allows("git -C /tmp log -n 5");
+        assert_allows("git --config grep 'x' log -n 5");
+    }
+
+    // Round-2 finding 2: git-config keys are case-insensitive.
+    #[test]
+    fn blocks_git_config_hooks_path_case_insensitive() {
+        assert_blocks("git config core.HooksPath /tmp/x");
+        assert_blocks("git config core.HOOKSPATH /tmp/x");
+        assert_blocks("git -c core.HooksPath=/tmp/x commit -m x");
+        assert_blocks("git -ccore.HooksPath=/tmp/x commit -m x");
+    }
+
+    // Round-2 over-block 2: `--get` / bare key are READS — allowed.
+    #[test]
+    fn allows_git_config_get_hooks_path() {
+        assert_allows("git config --get core.hooksPath");
+        assert_allows("git config --get core.HooksPath");
+        assert_allows("git config core.hooksPath");
+    }
+
+    #[test]
+    fn blocks_git_config_hooks_path_mutating_flags() {
+        assert_blocks("git config --add core.hooksPath /tmp/x");
+        assert_blocks("git config --unset core.hooksPath");
+        assert_blocks("git config --unset-all core.hooksPath");
+    }
+
+    // Round-2 finding 3: short-flag bundles are never scanned for `n`.
+    // `-qn` = `-q -n`; but `-cuser.name=chris` (value after `c`) must NOT
+    // false-block.
+    #[test]
+    fn blocks_git_commit_short_bundle_verify() {
+        assert_blocks("git commit -qn -m x");
+        assert_blocks("git commit -nv -m x");
+    }
+
+    #[test]
+    fn allows_git_short_bundle_without_verify() {
+        assert_allows("git -cuser.name=chris commit -m x");
+        assert_allows("git commit -q -m x");
+    }
+
+    // Round-2 over-block 1: DIRECTORIES gate only the DELETION family. A
+    // Bash-authored file under `.claude/` (a skill) is a legitimate edit, so
+    // content-write families allow it — but exact FILES still block all
+    // families and dir deletion still blocks.
+    #[test]
+    fn allows_bash_writes_under_profile_surface_dirs() {
+        assert_allows("echo hi > .claude/agents/foo.md");
+        assert_allows("cp skill.md sub/.claude/agents/out.md");
+        assert_allows("echo x | tee .claude/skills/foo.md");
+        assert_allows("mkdir -p .claude/skills/x");
+    }
+
+    #[test]
+    fn allows_mv_into_profile_surface_dir_destination() {
+        assert_allows("mv /tmp/foo .claude/agents/foo.md");
+    }
+
+    // The EXEC surfaces (.pi/extensions, .opencode/plugins) stay protected
+    // for ALL write families (W3 self-trust: writing there installs a
+    // rail-bypass executable).
+    #[test]
+    fn blocks_bash_writes_under_exec_surface_dirs() {
+        assert_blocks("echo x > .pi/extensions/hook.js");
+        assert_blocks("echo x > ~/.pi/agent/extensions/skill/foo.md");
+        assert_blocks("cp /tmp/plugin.js .opencode/plugins/plugin.js");
+        assert_blocks("mv /tmp/x .pi/extensions/y");
+        assert_blocks("mv ~/.pi/agent/extensions /tmp/x");
+    }
+
+    #[test]
+    fn blocks_exact_surface_files_all_families() {
+        assert_blocks("echo x > .claude/settings.json");
+        assert_blocks("echo y >> $HOME/.codex/hooks.json");
+        assert_blocks("cp /tmp/x ~/.claude/settings.json");
+    }
+
+    #[test]
+    fn blocks_dir_deletion_family() {
+        assert_blocks("rm -rf .claude/agents");
+        assert_blocks("chmod -x .claude/skills");
+        assert_blocks("rmdir .codex");
+        assert_blocks("rm -rf ~/.pi/agent/extensions");
+    }
+
+    // Round-2 finding 4: the floor hook's PARENT dir (`.git/hooks`) deletion
+    // removes the rail without naming pre-commit — block it (deletion family
+    // only, like the adapter surface dirs).
+    #[test]
+    fn blocks_floor_hooks_parent_dir_deletion() {
+        assert_blocks("rm -rf .git/hooks");
+        assert_blocks("rm -rf .git/hooks/");
+        assert_blocks("rm -rf /repo/.git/hooks");
+    }
+
+    #[test]
+    fn allows_git_log_dash_n_count() {
+        assert_allows("git log -n 5");
+        assert_allows("git show -n 3");
+        assert_allows("git diff -n");
+    }
+
+    // Review finding (2026-08-17): `mv` with a protected SOURCE moves the
+    // rail away — as destructive as a protected destination. cp stays
+    // source-read-only.
+    #[test]
+    fn blocks_mv_from_surface_source() {
+        assert_blocks("mv ~/.claude/settings.json /tmp/x");
+        assert_blocks("mv .claude/settings.local.json /tmp/x");
+        assert_blocks("mv ~/.pi/agent/extensions /tmp/x");
+    }
+
+    // Review finding (2026-08-17): unlink/truncate are rm-family deletes;
+    // parent-dir deletion (rm -rf ~/.claude) and glob spellings of the floor
+    // hook must block too.
+    #[test]
+    fn blocks_unlink_and_truncate_on_surface() {
+        assert_blocks("unlink ~/.claude/settings.json");
+        assert_blocks("truncate -s 0 ~/.claude/settings.json");
+        assert_blocks("truncate -s 0 .codex/hooks.json");
+    }
+
+    #[test]
+    fn blocks_parent_dir_deletion() {
+        assert_blocks("rm -rf ~/.claude");
+        assert_blocks("rm -rf ~/.codex");
+        assert_blocks("rm -rf .claude");
+    }
+
+    #[test]
+    fn blocks_floor_hook_glob_spelling() {
+        assert_blocks("rm .git/hooks/pre-commit*");
+        assert_blocks("rm -f /repo/.git/hooks/pre-commit*");
+    }
+
+    // --- allow pins: reads and lookalikes must NOT block ---
+    #[test]
+    fn allows_reading_surface_files() {
+        assert_allows("cat ~/.claude/settings.json");
+        assert_allows("cat $HOME/.claude/settings.json");
+        assert_allows("cat .claude/settings.json");
+        assert_allows("jq . ~/.codex/hooks.json");
+    }
+
+    #[test]
+    fn allows_surface_path_as_source() {
+        assert_allows("cp ~/.claude/settings.json /tmp/backup");
+        assert_allows("cp .codex/hooks.json /tmp/backup");
+        assert_allows("dd if=.claude/settings.json of=/tmp/backup");
+    }
+
+    #[test]
+    fn allows_unrelated_settings_paths() {
+        assert_allows("echo x > ./config/settings.json");
+        assert_allows("echo x > /etc/app/settings.json");
+        assert_allows("echo x > .pi/extensions-backup/foo.js");
+        assert_allows("echo x > .pi/extensions_old/foo.js");
+        assert_allows("echo x > my.opencode/plugins/x");
+        assert_allows("echo x > .git/hooks/pre-commit.sh");
+        assert_allows("echo x > .git/hooks/pre-commit.d/foo");
+    }
+
+    #[test]
+    fn allows_plain_git_commands() {
+        assert_allows("git commit -m x");
+        assert_allows("git push origin main");
+        assert_allows("git config user.name test");
+        assert_allows("git status");
+    }
+
+    // --- decide_with_home: explicit HOME normalization parity with the
+    //     env-driven decide() ---
+    #[test]
+    fn decide_with_home_blocks_home_spellings_with_explicit_home() {
+        let home = "/h/u/m";
+        for cmd in [
+            "echo x > ~/.claude/settings.json",
+            "echo x > $HOME/.claude/settings.json",
+            "echo x > /h/u/m/.claude/settings.json",
+            "echo x > ~/.pi/agent/extensions/foo.js",
+            "echo x > $HOME/.pi/agent/extensions/foo.js",
+            "rm -rf ~/.pi/agent/extensions",
+            "rm ~/.codex/hooks.json",
+        ] {
+            assert!(
+                matches!(decide_with_home(cmd, Some(home)), Decision::Block(_)),
+                "expected Block for {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decide_with_home_blocks_project_scoped_forms_without_home() {
+        // Project-scoped install targets are surface regardless of any HOME:
+        // `.claude/settings.json` (settings.local), `.codex/hooks.json`,
+        // `.opencode/plugins/...` must all block with home=None too.
+        for cmd in [
+            "echo x > .claude/settings.json",
+            "echo x > .claude/settings.local.json",
+            "echo x > .codex/hooks.json",
+            "echo x > sub/.opencode/plugins/foo.js",
+            "echo x > .pi/extensions/foo.js",
+        ] {
+            assert!(
+                matches!(decide_with_home(cmd, None), Decision::Block(_)),
+                "expected Block for {cmd:?}"
+            );
+        }
     }
 }

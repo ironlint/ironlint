@@ -52,5 +52,9 @@ mod tests {
         assert!(!strip_frontmatter(GUIDE).starts_with("---"));
         assert!(strip_frontmatter(GUIDE).contains("$IRONLINT_FILE"));
         assert!(strip_frontmatter(GUIDE).contains("$IRONLINT_TMPFILE"));
+        // W2-R3: the embedded guide must carry the lifecycle-placement
+        // heuristic and its re-scoped rustfmt example.
+        assert!(strip_frontmatter(GUIDE).contains("Lifecycle placement"));
+        assert!(strip_frontmatter(GUIDE).contains("xargs -0 rustfmt --check"));
     }
 }

@@ -4,91 +4,115 @@ Guidance for AI coding agents working in this repo.
 
 ## What this is
 
-Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — local CI for AI coding agents. Status: **0.4 "checks pipeline" + self-trust bash gate all merged; `ironlint verify` and the full `doctor` expansion remain pending.** A check is `files` (globs) + `run` (or `steps`) + `on` (lifecycle); ironlint matches a touched file to checks, runs each command with the ABI on env + proposed content on stdin, and reads only the exit code — **any nonzero exit (1–125) blocks**. No per-rule engines, no severity, no LLM. CLI ships `check` (with `--file`, `--diff`, or bare for a repo-wide sweep), `validate`, `init` (scaffolds `.ironlint.yml` AND onboards ironlint's hook into detected coding agents — claude-code, codex, pi, opencode), `explain`, `show-resolved-config`, `doctor` (reports per-harness adapter status in the `checks[]` array), `trust` (blesses the out-of-repo store; `check` fails closed — exit 4 — on untrusted config/checks), `gate-bash` (pure-Rust Bash-command classifier the adapters' Bash branches shell out to — blocks `ironlint trust` and Bash writes to the policy surface; not a `check`, not trust-gated, runs with no `.ironlint.yml`), `update` (self-updates the binary to the latest GitHub release via the dist install receipt), `watch` (a read-only live TUI over the `.ironlint/log.jsonl` telemetry log), and `schema` (prints the canonical check-authoring guide — the same content `ironlint init` installs into each agent as the `ironlint-config` skill). **Every adapter also gates the agent's Bash tool** via `gate-bash`, closing the self-trust escape hatch (an agent can't run `ironlint trust` or write `.ironlint.yml` / `.ironlint/scripts/` through Bash). Authoritative design: `specs/2026-06-28-ironlint-checks-pipeline-design.md`; bash-gate design: `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`; per-phase plans in `plans/`.
+Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully): local CI for AI coding agents. A **check** is `files` (globs) + `run` (or `steps`) + `on` (lifecycle). ironlint matches touched files to checks, runs each command via `sh -c` with the check ABI on env + proposed content on stdin, and reads only the exit code. No per-rule engines, no severity tiers, no LLM.
 
-**Not yet built (later plans):** `ironlint verify` + the full `doctor` expansion.
+Authoring guide (the canonical one — same text `init` installs as the `ironlint-config` skill): `ironlint schema`.
 
-## Rules
-
-- Bug fixes start with a failing test (use the test-writing skill). The failing test becomes regression coverage.
-- After completing a coding task, request code review from a separate agent.
-- Your code reviews are reviewed by the principal engineer — do deep work.
-- Tool hasn't shipped; no hedging.
-- Rust files under `crates/*/src/` must meet ≥80% **region** coverage (distinct decision points — branches, short-circuits, match arms — not executed lines). CI enforces per-file via `scripts/ci-coverage.sh` (cargo-llvm-cov). Code added without bringing the file to the gate breaks the build.
-- Cognitive complexity per function is capped at **15** via clippy (`clippy.toml`, with `#![warn(clippy::cognitive_complexity)]` at each crate root). Refactor over annotate; reach for `#[allow(clippy::cognitive_complexity)]` only when complexity is intrinsic to the function and decomposing would scatter the flow — document why.
-- Mutation testing is a **local, ad-hoc** investigative tool, not a CI gate (would burn runner minutes). `cargo install cargo-mutants` once, then point it at a file or diff: `cargo mutants --file 'crates/ironlint-core/src/<name>.rs'` for one file, or `git diff main.. > pr.diff && cargo mutants --in-diff pr.diff` for the PR. A surviving mutant means tests executed the code but didn't verify what it does — treat survivors in code you touched as a coverage gap.
-- Clean up build artifacts you produced once the task is done. If you ran `cargo build --release` or built a one-off binary to verify behavior, drop it with `cargo clean -p <crate>` or `rm target/release/<bin>` after verification. Same for throwaway files like `pr.diff`, ad-hoc tarballs, scratch `cargo mutants` output, or any binary built for a single check. The persistent `target/` you're actively iterating in stays — this rule is about artifacts *this task* created, not the working tree.
+**Status:** 0.4 checks pipeline, bash gate (`gate-bash`) with the harness
+self-defense surface, git pre-commit floor hook (`init` installs it; runs
+`check --diff` at every commit — exit 2/4 block, 3 fail-open honoring
+`IRONLINT_FAIL_CLOSED_ON_INTERNAL`, 1 blocks), pinned per-harness contract
+fixtures (`scripts/ci-adapters.sh`). **W4 is PARTIAL**: only codex has real
+live-captured payloads (apply_patch-add/update, migrated from
+`tests/fixtures/codex/`); claude-code/pi/opencode dirs are README-only until
+their capture procedures run (see each `fixtures/README.md`) — suites fall
+back to synthetics with loud warnings, and a README-only dir is *declared*
+capture-pending (loud W4-PARTIAL note, CI stays green); a fixtures dir whose
+README declaration is gone hard-fails the fixture meta-tests in CI. Capture is
+**back-burnered**, not dropped. **Not built:** `ironlint verify`.
+**Removed:** the drift sweep / `gate-drift` (an earlier gate-after-write
+attempt, deliberately abandoned — treat any docs referencing `gate-drift`,
+drift-stamp.json, or violations.json as stale). Next design:
+`specs/2026-08-17-git-floor-hook-and-self-defense-design.md`.
 
 ## Commands
 
 ```bash
-cargo build --release                       # produces ./target/release/ironlint
-./target/release/ironlint check              # bare = repo-wide sweep (batched where checks allow)
+cargo build --release                       # ./target/release/ironlint
+./target/release/ironlint check              # bare = repo-wide sweep
 cargo test                                  # all workspace tests
-cargo test -p ironlint-core                 # core only
-cargo test -p ironlint-cli                  # CLI only
-cargo test --test cli_e2e_gates             # single integration test file (checks pipeline)
-cargo test <name>                           # filter by test-fn name
-cargo clippy --all-targets -- -D warnings   # lint
+cargo test -p ironlint-core                 # core only / -p ironlint-cli for CLI
+cargo test --test cli_e2e_gates             # one integration test file
+cargo clippy --all-targets -- -D warnings
 cargo fmt
 bash scripts/ci-coverage.sh                 # per-file ≥80% region-coverage gate (matches CI)
 ```
 
-CLI tests use `assert_cmd` against the compiled binary. (`insta` snapshots may exist for some surfaces — `cargo insta review` after an intentional shape change.)
+## Invariants — do not break
+
+- **Exit codes** (`commands/check.rs`): `0` pass, `1` config/load error, `2` block (check exited 1–125), `3` internal (127/timeout/signal — never a silent pass; adapters fail-open by default, opt-in `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`), `4` untrusted config (fail-closed at adapters; run `ironlint trust`). Consumed by CI and adapters.
+- **Trust** lives at the CLI `check` layer only (`~/.config/ironlint/trust.json`, keyed by canonical config path, hash covers config bytes + `.ironlint/scripts/`). `IronLintEngine::load` stays pure; read-only commands (`validate`, `explain`, `show-resolved-config`, `doctor`) never enforce trust.
+- **Scope matching** (`config/scope.rs`): bare glob without `/` matches at any depth (`*.py` → `**/*.py`). Deliberate bully parity — don't "fix" it.
+- **Verdict JSON** is a public surface: `Verdict`, `Block`, `GateError`, `Status` locked at `SCHEMA_VERSION = 6`; bump to change. Telemetry records are versioned separately (currently v5).
+- **Binary name** is `ironlint`. `Cargo.lock` is committed; CI builds `--locked`.
+- **Check ABI** (locked): `$IRONLINT_FILE`, `$IRONLINT_FILES`, `$IRONLINT_ROOT`, `$IRONLINT_EVENT` (write|pre-commit), `$IRONLINT_TMPFILE`, `$IRONLINT_BIN`, `$IRONLINT_PROPOSED_MANIFEST`, proposed content on stdin. Paths travel as env values, never spliced into `run`.
+- **Suppression**: an `ironlint-disable: <check-id>` line directive silences that check for the whole file; directive ends at whitespace/`*`/`/`.
+- **Bash gate** (`ironlint gate-bash`, crate `ironlint-bash-gate`): NOT a check, NOT trust-gated, runs config-less. Exit `0` allow / `2` block; anything else is fail-closed at adapters. Blocks `ironlint trust`, Bash writes to the policy surface (`.ironlint.yml`, `.ironlint/scripts/`), the adapter installation surface (`.claude/settings*.json`, `.codex/hooks.json` — exact FILES gate all write families; `.pi/extensions`, `~/.pi/agent/extensions`, `.opencode/plugins` — EXEC dirs gate all write families, since writing there installs a rail-bypass executable; the broad `.claude`/`.codex` profile dirs gate only the DELETION family, so Bash-authoring a skill file under `.claude/` stays legal — parity-tested against `adapter::adapter_install_surface`), the git floor hook (`.git/hooks/pre-commit` + the `.git/hooks` parent dir, deletion family), and the git-bypass forms (`--no-verify` blocks for every hook-running subcommand; `-n`/short-bundles block for `commit` only — `merge`/`pull` `-n` is `--no-stat`, `cherry-pick`/`revert` `-n` is `--no-commit`; `-c core.hooksPath=…` and `config` hooksPath mutations block, case-insensitively; `GIT_CONFIG_KEY_i`/`GIT_CONFIG_PARAMETERS` env injection of `core.hooksPath` blocks, case-insensitively; `config --get`/bare-key READS stay allowed), plus `rm`/`chmod`/`chown`/`rmdir`/`unlink`/`truncate` against any protected path. Known gaps: variable-substitution indirection (documented, out of scope); home-scoped settings are reachable via file tools (project-scoped settings are repo paths — cover them with a normal check).
+
+## Process rules
+
+- Bug fixes start with a failing test; that test becomes regression coverage.
+- After completing a coding task, request code review from a separate agent.
+- Rust files under `crates/*/src/` must meet ≥80% **region** coverage; CI enforces per-file via `scripts/ci-coverage.sh`.
+- Cognitive complexity ≤15 per function (clippy `cognitive_complexity`, warned at crate roots). Refactor over annotate.
+- Mutation testing (`cargo mutants`) is local/ad-hoc investigation, not a CI gate.
+- Delete build artifacts your task produced (`target/release` binaries, scratch diffs, mutants output); the iterating `target/` stays.
+- **Adapter contract fixtures** (`adapters/<harness>/fixtures/`, W4): on any harness release that touches hooks/plugin payloads, run the `adapter-drift-audit` skill for that harness; if payloads changed, recapture fixtures (see `adapters/<harness>/fixtures/README.md`) and bump `harness_version`. A fixture without a parseable provenance header fails the contract tests; a missing fixture falls back to embedded synthetics with a loud capture-pending warning; a fixtures dir that loses its README declaration hard-fails the meta-tests in CI. `scripts/ci-adapters.sh` runs all four contract suites.
 
 ## Architecture
 
-Cargo workspace, three crates:
+Cargo workspace, three crates. Binary: `ironlint`.
 
-- **`ironlint-core`** — library. Modules:
-  - `config` — parse the checks YAML (`Config { extends, execution, checks }`, `Check { files, run, steps, on, name }`, `Step { name, run }`), glob scope matching (`scope.rs`), `extends:` resolution (`extends.rs`)
-  - `diff` — unified-diff parser (used by CLI `--diff` to enumerate changed files)
-  - `engine` — the single check-execution model: `gate::run_gate` spawns `sh -c <run>`, feeds stdin, enforces the timeout, and classifies the exit code into a `GateOutcome` (`Pass` / `Block { message }` / `Internal(InternalReason)`). No `RuleEngine` trait, no per-engine impls.
-  - `runner` — orchestrates: load → `extends`-resolve → build per-check scope matchers → dispatch per lifecycle (`write`: one invocation per matching file; `pre-commit`: one invocation for the whole matching set) → fold into a `Verdict` → telemetry-log
-  - `trust` — out-of-repo allow-list at `~/.config/ironlint/trust.json` (XDG: `$XDG_CONFIG_HOME/ironlint/trust.json`). Hash covers the config bytes + every file under `.ironlint/scripts/` (sorted by relative path); keyed by the config's canonical absolute path. Atomic write on `ironlint trust`. Enforcement is at the CLI `check` layer only — `IronLintEngine::load` stays pure.
-  - `verdict` — `Status` (Pass / Block / InternalError) + the locked JSON shape (`Verdict { blocks, errors, passed, .. }`, `Block`, `GateError`)
-  - `disable` — `ironlint-disable: <check-id>` line directives; file-wide (a directive anywhere suppresses that check for that file). Directive ends at whitespace/`*`/`/`.
-  - `telemetry` — `.ironlint/log.jsonl`, append-only check log of `PerCheckRecord`s
-  - `watch` — read-only live TUI over the telemetry log (`watch.rs`).
-  - `adapter` — adapter-artifact materialization and the `.ironlint-adapter.json` sidecar the `init` onboarding writes.
-- **`ironlint-cli`** — thin binary, name `ironlint`. `cli.rs` defines clap subcommands; `commands/{check,validate,init,explain,show_resolved_config,doctor,trust,gate_bash,update,schema,watch,sweep,config,error_report}.rs` are one-function adapters into core (`init` is a module dir; `config`/`error_report`/`sweep` are shared helpers).
-- **`ironlint-bash-gate`** — leaf crate holding the pure-Rust Bash-command classifier `ironlint gate-bash` shells out to (see the Bash gate paragraph below).
+- **`ironlint-core`** — library: `config` (parse/checks/`extends`/scope), `diff` (unified-diff parser), `engine::gate` (spawn `sh -c`, stdin, timeout, classify exit into `GateOutcome`), `runner` (load → dispatch per lifecycle → `Verdict` → telemetry), `trust`, `verdict`, `disable`, `telemetry` (`.ironlint/log.jsonl`), `watch` (log TUI), `adapter` (adapter install/uninstall + `.ironlint-adapter.json` sidecar).
+  - `config::extends::resolve`: cycle-detected DFS; **local checks win on collision**.
+  - `config::parser` rejects pre-0.3 configs (`schema_version:`/`rules:`/`trust:` keys) with a curated error — no migration path.
+- **`ironlint-cli`** — thin binary; `cli.rs` clap subcommands (`check`, `validate`, `init`, `explain`, `show-resolved-config`, `doctor`, `trust`, `gate-bash`, `update`, `schema`, `watch`); `commands/*` are one-function adapters into core. CLI tests use `assert_cmd`.
+- **`ironlint-bash-gate`** — leaf crate, zero deps: the pure-Rust Bash classifier behind `ironlint gate-bash`.
 
-`IronLintEngine::load` (`crates/ironlint-core/src/runner.rs`) resolves `extends` and builds the per-check scope matchers. Two things it relies on:
+**Lifecycles.** `on: [write]` (default): per matching file, proposed content on stdin. `on: [pre-commit]`: one invocation per check over the whole matching set, `$IRONLINT_FILES` populated, stdin empty. Bare `check` sweep batches pre-commit checks (one spawn per check); write checks run sequentially per file. Timeout: `IRONLINT_TIMEOUT` env > `execution.timeout_secs` (default 30, clamped ≥1). No sandboxing.
 
-1. **Extends.** `config::extends::resolve` does a cycle-detected DFS; inherited checks fill gaps but **local checks win on collision**.
-2. **Legacy rejection.** `config::parser` rejects any pre-0.3 config (top-level `schema_version:`, `rules:`, or `trust:`) with a curated error pointing at the checks format — there is no migration path (no install base).
+Test fixtures: `tests/fixtures/` at repo root, relative paths from crate tests.
 
-(Trust is enforced at the CLI `check` layer — `check::run` calls `trust::check_trust` before invoking the engine and exits **4** on missing/mismatch (or a corrupt/unreadable trust store). A config the trust layer can't even hash — parse failure, missing `extends:` target, etc. — isn't a trust decision at all; it falls through to exit 1, the same code the subsequent `engine.load` error path uses. `IronLintEngine::load` stays pure; read-only commands do not enforce trust.)
+Design history: `specs/` (authoritative: `specs/2026-06-28-ironlint-checks-pipeline-design.md`); plans: `plans/`.
 
-**The check ABI** (locked stability surface — every adapter must satisfy it, every check `run` may rely on it): `$IRONLINT_FILE` (absolute path of the single file under check; not set for `pre-commit`), `$IRONLINT_FILES` (newline-joined list of all files under check; single entry for `write`, all staged files for `pre-commit`), `$IRONLINT_ROOT` (project root = the check's cwd), `$IRONLINT_EVENT` (`write`/`pre-commit`), `$IRONLINT_TMPFILE` (write-only, and only when the check's `run`/`steps` reference it: absolute path to an ironlint-materialized temp file — sibling of `$IRONLINT_FILE`, same extension — holding the proposed content; auto-removed after the check), `$IRONLINT_BIN` (absolute path to the running IronLint binary available to any check; falls back to the bare name `ironlint` if the executable path cannot be determined), `$IRONLINT_PROPOSED_MANIFEST` (optional sibling-proposal manifest available to any check during an atomic patch: absolute path to tab-separated `file_path\tcontent_path` lines; absent when no manifest is provided), the proposed post-edit content on **stdin** (empty for `pre-commit`). No string templating — the path travels only as an env value, never spliced into `run`.
+<!-- graft:start -->
+## Graft — repo context graph
 
-**Check verdict contract.** The check owns the verdict via its exit code: **any nonzero exit (1–125) blocks**; `0` passes. `126`/`127`/`≥128` (signal) / wall-clock timeout → InternalError (a broken check is never a silent pass). On Block, the check's combined trimmed stdout+stderr is the message; if both are empty, the runner fills `"<check-id> blocked"`.
+This repo is indexed in `graft/`: small linked markdown nodes that explain each
+system and carry exact file:line spans, kept in sync with the code through git.
 
-**Lifecycles.** `on: [write]` (default) fires per matching file on every agent write, with proposed content on stdin. `on: [pre-commit]` fires once per check before a commit — one invocation for the entire matching file set, `$IRONLINT_FILES` populated, stdin empty. `on: [write, pre-commit]` fires at both; no duplication needed (ironlint keys by check, not event).
+For ANY task here — understanding how something works, finding where code lives,
+or scoping a change — get context from the graph before grepping or opening
+source files. Re-ask freely (it's cheap) and reuse literal identifiers you
+already have (symbol, error string, file name) as the query. New to this repo?
+Run `graft map` first — a token-budgeted orientation (dir clusters, hubs,
+hotspots), no LLM, no key.
 
-**Exit-code contract** (`commands/check.rs`) — consumed by CI and editor adapters, do not break:
+- Run `graft ask "<your question>" --source` → ranked nodes with the relevant
+  code spans inlined (each hit's ≤8-line crux by default; `--full` for whole
+  definitions when the crux isn't enough). Match the tool to the task shape:
+  for understanding or editing, the top node IS the answer — cite its
+  `covers:` file:line spans and edit straight from `--source`. For
+  exhaustive tasks ("every occurrence / every caller of this pattern"), ranked
+  results are top-N, not complete — run `graft grep "<literal>"` instead
+  (exhaustive over indexed files, grouped by enclosing symbol), falling back
+  to raw `grep -rn` only for unindexed files.
+- `graft skeleton <file>` → every definition's signature + span, ~10× cheaper
+  than reading the file; use it to skim an API surface.
+- `graft callers <symbol>` gives precomputed, exact edges — who calls this.
+  Add `--direction out` for what it calls, or `--depth N` to walk
+  transitively for the full blast radius. For structural questions, skip
+  ranking and use this directly.
+- Or browse: `graft/INDEX.md` lists every node; follow the links.
+- Monorepos and folders of multiple repos rank fairly across sub-projects —
+  hits carry `[scope/]` labels naming which one they're from. Narrow with
+  `graft ask "<task>" --in <scope>/` once you know where you're working.
 
-- `0` — Pass (no warning tier exists)
-- `1` — config/load error (parse failure, missing file, unknown `--check`)
-- `2` — Block (≥1 check exited nonzero 1–125)
-- `3` — InternalError (≥1 check crashed: 127 / timeout / signal)
-- `4` — Untrusted config/checks (run `ironlint trust`) — the ONE sanctioned extension of this contract (Task 3.2 / Finding C3). Emitted by the trust gate *before* the engine loads or any check runs, never from a verdict.
+If a returned span is truncated ("+N more lines"), open the file at that exact
+range before finalizing. Only open source files when a node genuinely lacks a
+needed detail, and then at the exact file:line the node points to — never
+re-read whole files.
 
-Adapters fail-open on exit 3 by default; opt-in fail-closed via `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. Exit 4 is the opposite default: adapters must surface it loudly, and every pre-write adapter treats it as fail-closed — it blocks the tool call rather than allowing it through. An untrusted config must never be silently un-gated.
-
-**Bash gate (separate built-in).** `ironlint gate-bash` (in `crates/ironlint-bash-gate`, exposed via `commands/gate_bash.rs`) is NOT a `check` and NOT trust-gated — it runs even with no `.ironlint.yml`. Its exit contract is `0` = allow / `2` = block (reason on stdout); any other exit (spawn failure, signal) the adapters treat as fail-closed. Every adapter's Bash branch shells out to it with the command on stdin; the branch runs *before* the config-existence check so it fires even in a config-less project. It blocks `ironlint trust` and Bash writes to `.ironlint.yml` / `.ironlint/scripts/` (redirects, `tee`, `sed -i`, `ed`, `cp`/`mv` onto the policy surface). Variable-substitution indirection (`iron$(echo lint) trust`) is a documented known gap — adversarial tier, out of scope. See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
-
-**Verdict JSON** (`verdict.rs`): `SCHEMA_VERSION = 6`. Treat `Verdict`, `Block`, `GateError`, `Status`, and `SCHEMA_VERSION` as a public stability surface — bump `SCHEMA_VERSION` to change shape. (Telemetry records are versioned independently — `telemetry::SCHEMA_VERSION = 5`.)
-
-**Execution model.** `write` dispatch is sequential: one `run` invocation per matching file. `pre-commit` dispatch runs once per check (rayon parallel across checks is a possible follow-up). Per-check wall-clock is `IRONLINT_TIMEOUT` env (secs) → `execution.timeout_secs` (default 30), clamped ≥1. No sandboxing — the timeout is the only execution rail.
-
-**Scope matching** (`config/scope.rs`) deliberately diverges from raw globset: bare patterns without `/` also register as `**/<pattern>`, so `*.py` matches at any depth — mirrors bully's semantics. Don't "fix" it. Applies to each check's `files` list.
-
-## Conventions
-
-- A check is `files` (glob or list) + `run` (a shell string, handed to `sh -c` verbatim) or `steps` (a sequence of `{name, run}`), plus an optional `on` lifecycle and `name` label. There are no engines, no `severity`, no output-parsing modes — a check blocks by exiting nonzero (1–125) and owns its own message. Don't reintroduce per-rule kinds.
-- Test fixtures live in `tests/fixtures/` at the repo root; crate tests use relative paths.
-- `Cargo.lock` is committed (workspace policy) for reproducible release builds — cargo-dist resolves against the locked graph instead of re-resolving fresh on each runner, and users can `cargo install --locked`. CI and release builds use `--locked`; regenerate with `cargo generate-lockfile` (or a plain `cargo build`) when it drifts, then commit the update alongside the dependency bump.
-- Binary is `ironlint`, not `ironlint-cli`.
-- Trust enforcement lives in the CLI `check` command (`commands/check.rs`), not in `IronLintEngine::load`. Read-only commands (`validate`, `explain`, `show-resolved-config`, `doctor`) do not enforce trust. `doctor` is intentionally minimal until a later plan.
+After big code changes, refresh the graph with `graft build` (deterministic,
+no API key, $0).
+<!-- graft:end -->

@@ -1,3 +1,4 @@
+use super::git_hook::{self, HookState};
 use super::render::{render_plan, HarnessPlan, Source};
 use super::select;
 use super::Options;
@@ -7,6 +8,7 @@ use ironlint_core::adapter::{
     uninstall_skill, AdapterEnv, Harness, InstallResult, PlanStep, Scope,
 };
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Proceed {
@@ -25,6 +27,10 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         println!(
             "no supported harnesses detected; run `ironlint init --harness all` to wire all four"
         );
+        // The git pre-commit floor is not a harness: a scripted
+        // `init --yes` in a harness-less project still gets its floor
+        // (scaffolding-level behavior, not gated on harness confirmation).
+        floor_step(env, opts)?;
         return Ok(0);
     }
     let plans = build_plans(&selected, env, scope, opts.uninstall);
@@ -33,6 +39,7 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         render_plan(&plans, opts.uninstall, env, std::io::stdout().is_terminal())
     );
     if opts.dry_run {
+        print_floor_plan(env, opts)?;
         return Ok(0);
     }
     match confirm_gate(opts, &mut selected)? {
@@ -49,7 +56,67 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
     } else {
         println!("  installing: {names}");
     }
-    Ok(apply(&selected, env, scope, opts))
+    let code = apply(&selected, env, scope, opts);
+    // The git pre-commit floor is not a harness: it installs (or uninstalls)
+    // regardless of what the harness wiring above did, and is the last line
+    // of the summary so its trust notice (W1-R7) reads last.
+    run_floor(env, opts)?;
+    Ok(code)
+}
+/// Dry-run lines for the git floor: what a real run would install/remove.
+fn print_floor_plan(env: &AdapterEnv, opts: &Options) -> Result<()> {
+    if !opts.git_hook {
+        println!("  git floor:    skipped (--no-git-hook)");
+        return Ok(());
+    }
+    match git_hook::hook_path(&env.project_root)? {
+        Some(p) => println!(
+            "  git floor:    {} {}",
+            if opts.uninstall {
+                "would remove"
+            } else {
+                "would install"
+            },
+            p.display()
+        ),
+        None => println!("  git floor:    skipped (not a git work tree)"),
+    }
+    Ok(())
+}
+
+/// Floor step for paths that skip the harness confirm gate (dry-run plan
+/// line, or the harness-less non-TTY early return): plan under `--dry-run`,
+/// execute otherwise.
+fn floor_step(env: &AdapterEnv, opts: &Options) -> Result<()> {
+    if opts.dry_run {
+        print_floor_plan(env, opts)?;
+    } else {
+        run_floor(env, opts)?;
+    }
+    Ok(())
+}
+
+/// Install or remove the floor hook, printing the outcome and (on a fresh
+/// install) the W1-R7 trust reminder: the floor blocks untrusted configs at
+/// the commit boundary, so an unblessed config makes the first commit exit 4.
+fn run_floor(env: &AdapterEnv, opts: &Options) -> Result<()> {
+    if !opts.git_hook {
+        return Ok(());
+    }
+    let state = if opts.uninstall {
+        git_hook::uninstall(&env.project_root)?
+    } else {
+        let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ironlint"));
+        git_hook::install(&env.project_root, &bin)?
+    };
+    println!(
+        "  git floor:    {}",
+        git_hook::summarize(&state, opts.uninstall)
+    );
+    if !opts.uninstall && matches!(state, HookState::Installed(_) | HookState::Updated(_)) {
+        println!("  note: run `ironlint trust` for this config before the first commit — the floor blocks untrusted configs at the commit boundary");
+    }
+    Ok(())
 }
 
 /// Resolve the harness set and tag each with why it is present. Explicit
@@ -461,6 +528,7 @@ mod tests {
             hook_only: false,
             uninstall: false,
             dry_run: false,
+            git_hook: false,
         };
         let mut selected = vec![("claude-code".to_string(), Source::Detected)];
         let mut buf: Vec<u8> = Vec::new();
@@ -489,6 +557,7 @@ mod tests {
             hook_only: false,
             uninstall: false,
             dry_run: false,
+            git_hook: false,
         };
         let mut selected = vec![("claude-code".to_string(), Source::Detected)];
         let mut buf: Vec<u8> = Vec::new();
@@ -510,6 +579,7 @@ mod tests {
             hook_only: false,
             uninstall: false,
             dry_run: false,
+            git_hook: false,
         };
         let mut selected = vec![("codex".to_string(), Source::Requested)];
         let mut buf: Vec<u8> = Vec::new();

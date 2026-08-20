@@ -35,9 +35,11 @@ fn add_payload_for(cwd: &std::path::Path, path: &str) -> String {
     .to_string()
 }
 
-/// An Update-File payload changing `print('old')` → `print('new')` in foo.py.
+/// An Update-File payload changing `print('hi')` → `print('bye')` in foo.py —
+/// byte-matching the REAL captured fixture (`apply-patch-update.json`), so the
+/// synthetic fallback and the fixture exercise the same envelope.
 fn update_payload(cwd: &std::path::Path) -> String {
-    let patch = "*** Begin Patch\n*** Update File: foo.py\n@@\n-print('old')\n+print('new')\n*** End Patch\n";
+    let patch = "*** Begin Patch\n*** Update File: foo.py\n@@\n-print('hi')\n+print('bye')\n*** End Patch\n";
     serde_json::json!({
         "tool_name": "apply_patch",
         "cwd": cwd.display().to_string(),
@@ -57,6 +59,50 @@ fn bash_payload(cwd: &std::path::Path, command: &str) -> String {
         "tool_input": { "command": command },
     })
     .to_string()
+}
+
+// --- W4 pinned fixtures ------------------------------------------------------
+//
+// The happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
+// `adapters/codex/fixtures/` (provenance-stamped; see the README there +
+// `common::fixtures`). The fixture pins the SHAPE — keys, extra fields,
+// ordering — while the per-test cwd / command is spliced in below. The
+// synthetic builders above stay for malformed/adversarial edge cases. While
+// capture is pending (fixture missing), `load_fixture` logs a loud warning
+// and the synthetic builder is the fallback.
+
+fn spliced_fixture(
+    harness: &str,
+    name: &str,
+    splice: impl FnOnce(&mut serde_json::Value),
+) -> Option<String> {
+    common::fixtures::load_fixture(harness, name)
+        .unwrap()
+        .map(|fx| {
+            let mut v = fx.payload;
+            splice(&mut v);
+            serde_json::to_string(&v).unwrap()
+        })
+}
+
+/// Splice the per-test cwd into a fixture payload's top-level `cwd` field
+/// (codex emits it beside `tool_name`).
+fn splice_cwd(v: &mut serde_json::Value, cwd: &std::path::Path) {
+    if let Some(cwd_field) = v.get_mut("cwd") {
+        *cwd_field = serde_json::json!(cwd.display().to_string());
+    }
+}
+
+fn add_payload_fixture(cwd: &std::path::Path) -> String {
+    let c = cwd.to_path_buf();
+    spliced_fixture("codex", "apply-patch-add", move |v| splice_cwd(v, &c))
+        .unwrap_or_else(|| add_payload(cwd))
+}
+
+fn update_payload_fixture(cwd: &std::path::Path) -> String {
+    let c = cwd.to_path_buf();
+    spliced_fixture("codex", "apply-patch-update", move |v| splice_cwd(v, &c))
+        .unwrap_or_else(|| update_payload(cwd))
 }
 
 /// A two-file Add-File apply_patch payload touching both `foo.py` and
@@ -128,13 +174,17 @@ fn update_block_on_exit_2_emits_deny_json() {
         return;
     }
     let fx = HookFixture::new(HOOK);
-    std::fs::write(fx.file("foo.py"), "print('old')\n").unwrap();
+    std::fs::write(fx.file("foo.py"), "print('hi')\n").unwrap();
     fx.stub(
         2,
         r#"{"blocks":[{"check":"g","message":"blocked update"}]}"#,
     );
     let out = fx
-        .run("pre-tool-use", &update_payload(fx.project.path()), &[])
+        .run(
+            "pre-tool-use",
+            &update_payload_fixture(fx.project.path()),
+            &[],
+        )
         .success()
         .code(0)
         .get_output()
@@ -340,30 +390,36 @@ fn add_to_nested_scripts_dir_is_gated() {
 //
 // codex emits tool_name:"Bash" for shell commands. The Bash branch runs BEFORE
 // the apply_patch-only gate (which would otherwise allow every non-apply_patch
-// tool). Substring pre-filter (ironlint | .ironlint) skips the spawn for
-// ordinary commands; on a hit, pipes `tool_input.command` to `ironlint gate-bash`
-// and translates exit 0 → allow, exit 2 → deny (deny-JSON/exit-0 per codex's
-// contract), anything else → fail-closed deny. Reuses the existing deny().
+// tool). EVERY Bash call pipes `tool_input.command` to `ironlint gate-bash`
+// — no substring pre-filter, so the W3 surface (git-bypass forms, harness
+// install-surface writes, `.git/hooks` protection) always reaches the matcher
+// and no per-shim keyword list can drift. Translates exit 0 → allow, exit 2 →
+// deny (deny-JSON/exit-0 per codex's contract), anything else → fail-closed
+// deny. Reuses the existing deny().
 
-/// `ls` never mentions ironlint → the pre-filter skips the spawn entirely. The
-/// stub is a TRAP (exit 2): if the hook wrongly spawned, this would deny. Allow
-/// (exit 0, empty stdout) proves the pre-filter short-circuit.
+/// `ls -la` flows through the REAL `ironlint gate-bash` (no pre-filter): the
+/// matcher allows it (exit 0) → the hook allows (exit 0, empty stdout). Proves
+/// a benign command pays the gate and passes through — not a keyword skip.
 #[test]
-fn bash_allows_benign_command() {
+fn bash_allows_benign_command_with_real_binary() {
     if !common::hook_tools_available() {
         eprintln!("skipping: jq/python3 not available");
         return;
     }
-    let fx = HookFixture::new(HOOK);
-    fx.stub(2, "trap");
-    fx.run("pre-tool-use", &bash_payload(fx.project.path(), "ls"), &[])
-        .success()
-        .code(0)
-        .stdout(predicates::str::is_empty());
+    let ironlint = assert_cmd::cargo::cargo_bin("ironlint");
+    let fx = common::RealBinFixture::new(HOOK, &ironlint);
+    fx.run(
+        "pre-tool-use",
+        &bash_payload(fx.project.path(), "ls -la"),
+        &[],
+    )
+    .success()
+    .code(0)
+    .stdout(predicates::str::is_empty());
 }
 
-/// `ironlint trust` hits the pre-filter and the stubbed gate-bash exits 2 with
-/// the reason → the hook must emit a deny verdict (exit 0, deny JSON) whose
+/// `ironlint trust` is a block: the stubbed gate-bash exits 2 with the reason
+/// → the hook must emit a deny verdict (exit 0, deny JSON) whose
 /// reason carries the gate-bash message.
 #[test]
 fn bash_blocks_ironlint_trust() {
@@ -387,8 +443,8 @@ fn bash_blocks_ironlint_trust() {
     assert_deny(&out, "ironlint trust must be run by a human");
 }
 
-/// A Bash redirect onto `.ironlint.yml` hits the pre-filter (`.ironlint`) and
-/// the stubbed gate-bash exits 2 → deny.
+/// A Bash redirect onto `.ironlint.yml` is a policy-surface write: the stubbed
+/// gate-bash exits 2 → deny.
 #[test]
 fn bash_blocks_redirect_to_ironlint_yml() {
     if !common::hook_tools_available() {
@@ -464,6 +520,32 @@ fn bash_blocks_ironlint_trust_with_real_binary() {
     assert_deny(&out, "ironlint trust must be run by a human");
 }
 
+/// End-to-end against the REAL `ironlint gate-bash`: a git-floor bypass form
+/// (`--no-verify`) must block through the hook. This is the W3 surface the
+/// removed pre-filter previously starved — `git commit --no-verify` now reaches
+/// the matcher and is denied (deny-JSON/exit-0).
+#[test]
+fn bash_blocks_git_no_verify_with_real_binary() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let ironlint = assert_cmd::cargo::cargo_bin("ironlint");
+    let fx = common::RealBinFixture::new(HOOK, &ironlint);
+    let out = fx
+        .run(
+            "pre-tool-use",
+            &bash_payload(fx.project.path(), "git commit --no-verify -m x"),
+            &[],
+        )
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "git commit bypass");
+}
+
 /// A patch touching two files in one envelope must run the per-file gate
 /// loop against both manifest entries — single-file tests can't exercise
 /// that the loop correctly walks a multi-line manifest and still blocks.
@@ -517,9 +599,11 @@ fn envelope_without_recognized_op_fails_closed() {
     assert_deny(&out, "recognized");
 }
 
-/// Feeds a byte-verbatim, real-Codex-captured payload (`tests/fixtures/codex/
-/// apply_patch_add.json`) through the hook, so those fixtures stop being
-/// orphaned ground-truth files nothing exercises.
+/// Feeds the byte-verbatim, real-Codex-captured payload
+/// (`adapters/codex/fixtures/apply-patch-add.json`, provenance-stamped per
+/// W4) through the hook. The captured envelope (session ids, empty `@@`
+/// hunk, no trailing newline on `*** End Patch`) is what's under test; only
+/// `cwd` is spliced to the temp project.
 #[test]
 fn real_captured_add_fixture_blocks_on_exit_2() {
     if !common::hook_tools_available() {
@@ -531,11 +615,9 @@ fn real_captured_add_fixture_blocks_on_exit_2() {
         2,
         r#"{"blocks":[{"check":"g","message":"blocked captured add"}]}"#,
     );
-    let raw = std::fs::read_to_string(common::repo_path(
-        "tests/fixtures/codex/apply_patch_add.json",
-    ))
-    .expect("fixture must exist");
-    let payload = raw.replace("__CWD__", &fx.project.path().display().to_string());
+    // Loads the REAL captured payload (W4 fixture); loud warning + synthetic
+    // fallback only while capture is pending.
+    let payload = add_payload_fixture(fx.project.path());
     let out = fx
         .run("pre-tool-use", &payload, &[])
         .success()
@@ -565,7 +647,11 @@ fn update_on_non_utf8_file_denies_with_clean_reason() {
     fx.stub(0, "");
     std::fs::write(fx.file("foo.py"), b"\xff\xfe not utf8\n").unwrap();
     let out = fx
-        .run("pre-tool-use", &update_payload(fx.project.path()), &[])
+        .run(
+            "pre-tool-use",
+            &update_payload_fixture(fx.project.path()),
+            &[],
+        )
         .success()
         .code(0)
         .get_output()
@@ -592,4 +678,44 @@ fn update_on_non_utf8_file_denies_with_clean_reason() {
         !reason.contains("UnicodeDecodeError"),
         "reason must not leak the raw exception name: {reason:?}"
     );
+}
+
+/// W4 meta-test: every fixture present in `adapters/codex/fixtures/` must
+/// load with a parseable provenance header (W4-R3) and carry the fields
+/// hook.sh reads. Currently exercised by the two REAL captured apply_patch
+/// fixtures (migrated from the legacy `tests/fixtures/codex/` dir). A
+/// fixture that fails to load is a hard failure, never a skip.
+#[test]
+fn fixtures_pin_happy_shape_with_provenance() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fixtures = common::fixtures::assert_fixture_dir_provenance("codex");
+    common::fixtures::assert_fixture_dir_capture_status("codex");
+    assert!(
+        !fixtures.is_empty(),
+        "codex fixtures must not be empty: the two captured apply_patch payloads are required"
+    );
+    for fx in &fixtures {
+        let harness = fx
+            .provenance
+            .get("harness")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        assert_eq!(harness, "codex", "provenance must name the harness");
+        let tool = fx
+            .payload
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        assert!(
+            ["apply_patch", "Bash"].contains(&tool),
+            "fixture pins unexpected tool {tool:?}"
+        );
+        assert!(
+            fx.payload.get("tool_input").is_some(),
+            "fixture must carry tool_input"
+        );
+    }
 }

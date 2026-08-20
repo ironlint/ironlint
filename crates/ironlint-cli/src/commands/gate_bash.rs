@@ -11,11 +11,10 @@ use anyhow::Result;
 use std::io::Read;
 
 pub fn run() -> Result<i32> {
-    // Read the whole command from stdin. The adapters pipe it in; the
-    // pre-filter guarantees the bytes contained a UTF8-decodable `ironlint`
-    // or `.ironlint` substring, so lossy decoding is safe for the matcher.
-    // A genuinely malformed (non-UTF8) stdin is unreachable in practice but
-    // defended: allow + log, never crash.
+    // Read the whole command from stdin. The adapters pipe every Bash tool
+    // call in (pre-filter removed 2026-08-20); a genuinely malformed
+    // (non-UTF8) stdin is unreachable in practice but defended: allow +
+    // log, never crash.
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
         eprintln!("ironlint gate-bash: could not read stdin: {e}");
@@ -24,7 +23,7 @@ pub fn run() -> Result<i32> {
     let command = if let Ok(s) = std::str::from_utf8(&buf) {
         s
     } else {
-        eprintln!("ironlint gate-bash: non-UTF8 stdin — allowing (unreachable via pre-filter)");
+        eprintln!("ironlint gate-bash: non-UTF8 stdin — allowing");
         return Ok(0);
     };
 

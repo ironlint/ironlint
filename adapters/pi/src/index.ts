@@ -227,9 +227,6 @@ export default function ironlintExtension(pi: PiExtensionAPI): void {
     // `ironlint gate-bash` — the single source shared across every adapter.
     if (toolName === "bash") {
       const command = typeof input.command === "string" ? input.command : ""
-      // Substring pre-filter: ordinary commands (ls, git, cargo) never mention
-      // ironlint or .ironlint, so skip the spawn entirely — they pay nothing.
-      if (!command.includes("ironlint") && !command.includes(".ironlint")) return
       const res = runIronLint(["gate-bash"], command)
       if (res.exitCode === 0) return // allow
       if (res.exitCode === 2) {

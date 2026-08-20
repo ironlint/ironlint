@@ -120,6 +120,35 @@ A minimal `.ironlint.yml` is just `checks:`. Two optional top-level keys tune it
     run: "detect-secrets scan $IRONLINT_FILES"
 ```
 
+## Lifecycle placement
+
+Place by legitimacy, not by preference. A check belongs at `write` if a file
+tripping it is *never* legitimate — banned APIs, secrets, forbidden markers,
+debug macros. Catching those at write stops the agent before the pattern
+spreads across files (commit-time rework is far more expensive). A check
+belongs at `pre-commit` if a legitimately mid-construction file could trip it
+— formatting, import resolution, whole-tree compilation, tests. Blocking
+those at write punishes TDD and partial edits.
+
+When a check moves to `pre-commit`, it can no longer read proposed content on
+stdin — re-scope the command to `$IRONLINT_FILES` (the matched set, on disk).
+Example — rustfmt moved to the floor:
+
+```yaml
+rustfmt:
+  name: rustfmt check
+  files: "**/*.rs"
+  on: [pre-commit]
+  run: |
+    echo "$IRONLINT_FILES" | tr '\n' '\0' | xargs -0 rustfmt --check --color=never
+```
+
+Project-scoped adapter settings (`.claude/settings*.json`, `.codex/hooks.json`,
+`.opencode/plugins/`) are ordinary repo paths — a normal check scoping them
+covers file-tool edits to them too. Home-scoped settings
+(`~/.claude/settings.json`) sit outside every repo glob; only the Bash gate
+covers those.
+
 ## Disable a check for a file
 
 Add `# ironlint-disable: <check-id>` anywhere in the file to suppress that check for the whole file:

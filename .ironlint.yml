@@ -28,17 +28,6 @@ checks:
         exit 1
       }
       exit 0
-
-  rustfmt-on-write:
-    name: rustfmt check
-    files: "**/*.rs"
-    run: |
-      diff=$(rustfmt --check --color=never 2>&1)
-      if [ -n "$diff" ]; then
-        echo "$diff"
-        exit 1
-      fi
-
   no-trailing-whitespace:
     name: no trailing whitespace
     files: ["**/*.rs", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
@@ -46,12 +35,20 @@ checks:
 
   final-newline:
     name: file ends with newline
-    files: ["**/*.rs", "**/*.md", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
+    files:
+      ["**/*.rs", "**/*.md", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
     run: |
       [ -z "$(tail -c1 /dev/stdin)" ] || {
         echo "file does not end with a newline" >&2
         exit 1
       }
+
+  rustfmt:
+    name: rustfmt check
+    files: "**/*.rs"
+    on: [pre-commit]
+    run: |
+      echo "$IRONLINT_FILES" | tr '\n' '\0' | xargs -0 rustfmt --check --color=never
 
   rust-pre-commit:
     name: rust quality gate

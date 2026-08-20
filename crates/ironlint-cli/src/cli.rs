@@ -106,6 +106,9 @@ pub enum Command {
         /// Remove ironlint hooks and materialized artifacts.
         #[arg(long)]
         uninstall: bool,
+        /// Do not install/remove the git pre-commit floor hook.
+        #[arg(long)]
+        no_git_hook: bool,
         /// Print intended changes without writing.
         #[arg(long)]
         dry_run: bool,

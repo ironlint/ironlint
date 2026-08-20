@@ -11,12 +11,15 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 
 ## Active
 
-_(nothing queued — Plan 2 trust store shipped 2026-06-24)_
+- [`2026-08-17-floor-hook-spec-completion`](2026-08-17-floor-hook-spec-completion.md) — pre-filter removal (adapters route all Bash to gate-bash), GIT_CONFIG env-injection gate, empty-fixture CI failure, spec closeout, trust + commit + smoke.
 
 ## Future
 
 Ideas that haven't graduated to plans. When something here has enough definition to write a plan against, lift it into a dated plan file.
 
+- **[2026-08-19]** Harness-watch CI job — weekly per-harness latest-version vs fixture provenance stamp plus docs-hash drift watch. _Why:_ auto-file drift issues feeding the `adapter-drift-audit` skill before a harness payload change ships silently.
+- **[2026-08-19]** `ironlint gate-tool` — W5: `--harness <id>` dialect parse/response moves into the binary so the adapter shims collapse to stdin→binary→stdout wiring. _Why:_ deletes jq from the shell hooks and shrinks the pi/opencode TS shims.
+- **[2026-08-19]** Live-capture contract tier — headless harness runs in CI regenerate pinned fixtures and open an auto-PR on drift. _Why:_ replaces the manual capture procedure deliberately deferred from W4.
 - **D2 `ironlint coverage`** and **D3 `ironlint debt`** ([spec §D](../specs/2026-05-12-bully-parity-closures.md)) — telemetry-derived rule-coverage and tech-debt reports. D1 (typed telemetry) shipped; these consume it.
 - **A4 `context.lines`** — per-rule context-line count override on the semantic prompt.
 - **C5 `validate --execute-dry-run`** — invoke `script:` rules in a sandbox during `validate`, surface failures early.

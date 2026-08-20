@@ -545,13 +545,24 @@ test("bash redirect to .ironlint.yml throws (blocks)", async () => {
   ).rejects.toThrow(/policy files must be edited/)
 })
 
-test("bash 'ls' allows (pre-filter skip)", async () => {
-  // 'ls' never mentions ironlint → pre-filter skips the spawn entirely.
+test("bash 'git commit --no-verify' throws (blocks)", async () => {
   const hooks = await IronLintPlugin(fakeCtx(project))
   await expect(
     hooks["tool.execute.before"]!(
       { tool: "bash", sessionID: "s", callID: "c" },
-      { args: { command: "ls" } },
+      { args: { command: "git commit --no-verify -m x" } },
+    ),
+  ).rejects.toThrow(/git commit bypass/)
+})
+
+test("bash 'ls -la' allows (through gate)", async () => {
+  // 'ls -la' reaches the real `ironlint gate-bash` (no pre-filter) and the
+  // matcher allows it → resolves undefined.
+  const hooks = await IronLintPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "bash", sessionID: "s", callID: "c" },
+      { args: { command: "ls -la" } },
     ),
   ).resolves.toBeUndefined()
 })
@@ -591,5 +602,91 @@ test("bash fails closed when ironlint is missing", async () => {
   } finally {
     process.env["PATH"] = savedPath
     rmSync(emptyBin, { recursive: true, force: true })
+  }
+})
+
+// --- W4 pinned contract fixtures (specs/2026-08-17-...-design.md) -----------
+//
+// The adapter's happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
+// `adapters/opencode/fixtures/` (provenance-stamped; see the README there).
+// Meta-test: every fixture present must carry provenance + the fields the
+// plugin reads. Three capture states: captured (check each fixture),
+// README-only = capture pending DECLARED (warn, pass), undeclared-empty
+// (no README, no fixtures) = warn locally / hard fail in CI.
+
+import { readdirSync, readFileSync, mkdirSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+
+function fixtureCaptureStatus(dir: string): "captured" | "pending-declared" | "undeclared-empty" {
+  let files: string[] = []
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".json"))
+  } catch {
+    files = []
+  }
+  if (files.length > 0) return "captured"
+  if (existsSync(join(dir, "README.md"))) return "pending-declared"
+  return "undeclared-empty"
+}
+
+function assertFixtureCaptureStatus(dir: string, harness: string, isCI: boolean): string {
+  const status = fixtureCaptureStatus(dir)
+  if (status === "pending-declared") {
+    console.error(
+      `W4-PARTIAL: adapters/${harness}/fixtures capture pending (README declares it) — see fixtures/README.md`,
+    )
+  } else if (status === "undeclared-empty") {
+    const msg =
+      `undeclared-empty fixtures dir: restore README.md (declare capture pending) ` +
+      `or run the capture procedure in fixtures/README.md`
+    if (isCI) throw new Error(msg)
+    console.error("WARNING: " + msg)
+  }
+  return status
+}
+
+test("fixtures: every captured payload carries provenance + fields the plugin reads", () => {
+  const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures")
+  const status = assertFixtureCaptureStatus(
+    fixturesDir,
+    "opencode",
+    !!process.env.CI && process.env.CI !== "false",
+  )
+  if (status !== "captured") return
+  const files = readdirSync(fixturesDir).filter((f) => f.endsWith(".json"))
+  for (const f of files) {
+    const v = JSON.parse(readFileSync(join(fixturesDir, f), "utf8"))
+    expect(v._provenance, `${f}: missing _provenance`).toBeTruthy()
+    expect(typeof v._provenance.harness, `${f}: provenance.harness`).toBe("string")
+    expect(v._provenance.harness_version, `${f}: provenance.harness_version required`).toBeTruthy()
+    expect(v._provenance.captured_at, `${f}: provenance.captured_at required`).toBeTruthy()
+    const input = v.payload
+    expect(input && typeof input, `${f}: payload must be an object`).toBe("object")
+    // The plugin reads a tool name + arguments of the shape
+    // { tool: string, args: { file_path | command | path | edits ... } }.
+    expect(typeof input.tool, `${f}: payload.tool`).toBe("string")
+    expect(input.args && typeof input.args === "object", `${f}: payload.args`).toBe(true)
+  }
+})
+
+test("fixtures: undeclared-empty fails hard under CI, declared-pending passes", () => {
+  const base = mkdtempSync(join(tmpdir(), "ironlint-opencode-fixtures-"))
+  try {
+    const pending = join(base, "pending")
+    mkdirSync(pending)
+    writeFileSync(join(pending, "README.md"), "capture pending\n")
+    expect(fixtureCaptureStatus(pending)).toBe("pending-declared")
+    expect(() => assertFixtureCaptureStatus(pending, "opencode", true)).not.toThrow()
+
+    const bare = join(base, "bare")
+    mkdirSync(bare)
+    expect(fixtureCaptureStatus(bare)).toBe("undeclared-empty")
+    expect(() => assertFixtureCaptureStatus(bare, "opencode", true)).toThrow(/undeclared-empty/)
+    expect(() => assertFixtureCaptureStatus(bare, "opencode", false)).not.toThrow()
+
+    expect(fixtureCaptureStatus(join(base, "missing"))).toBe("undeclared-empty")
+  } finally {
+    rmSync(base, { recursive: true, force: true })
   }
 })

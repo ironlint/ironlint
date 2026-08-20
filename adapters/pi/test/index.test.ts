@@ -423,13 +423,29 @@ test("tool_call: bash redirect to .ironlint.yml blocks", () => {
   }
 })
 
-test("tool_call: bash 'ls' allows (pre-filter skip)", () => {
+test("tool_call: bash 'git commit --no-verify' blocks", () => {
   const dir = makeProject()
   try {
     const handlers = loadExtension(dir)
-    // 'ls' never mentions ironlint → pre-filter skips the spawn entirely.
+    const result = handlers.tool_call!(
+      { toolName: "bash", input: { command: "git commit --no-verify -m x" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.match(result?.reason ?? "", /git commit bypass/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: bash 'ls -la' allows (through gate)", () => {
+  const dir = makeProject()
+  try {
+    const handlers = loadExtension(dir)
+    // 'ls -la' reaches the real `ironlint gate-bash` (no pre-filter) and the
+    // matcher allows it → no block result.
     assert.equal(
-      handlers.tool_call!({ toolName: "bash", input: { command: "ls" } }, {}),
+      handlers.tool_call!({ toolName: "bash", input: { command: "ls -la" } }, {}),
       undefined,
     )
   } finally {
@@ -461,8 +477,10 @@ test("tool_call: bash fails closed when ironlint is missing", () => {
   const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-emptybin-"))
   const origPath = process.env["PATH"] ?? ""
   try {
-    // PATH with no ironlint binary anywhere.
-    process.env["PATH"] = bin + delimiter + origPath.replace(/[^:]+ironlint[^:]*/g, "")
+    // PATH with ONLY the empty bin dir — no `ironlint` resolvable anywhere.
+    // (Scrubbing the ambient PATH instead would leak a global install living
+    // in a dir whose name doesn't contain "ironlint", e.g. ~/.cargo/bin.)
+    process.env["PATH"] = bin
     const handlers = loadExtension(dir)
     const result = handlers.tool_call!(
       { toolName: "bash", input: { command: "ironlint trust" } },
@@ -690,5 +708,96 @@ test("tool_call: exit-4 (untrusted config) blocks with the trust message", () =>
     process.env["PATH"] = origPath
     rmSync(dir, { recursive: true, force: true })
     rmSync(bin, { recursive: true, force: true })
+  }
+})
+
+// --- W4 pinned contract fixtures (specs/2026-08-17-...-design.md) -----------
+//
+// The adapter's happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
+// `adapters/pi/fixtures/` (provenance-stamped; see the README there). This
+// meta-test loads every fixture present and asserts the provenance header and
+// the fields the adapter reads. Three capture states: captured (check each
+// fixture), README-only = capture pending DECLARED (warn, pass), and
+// undeclared-empty (no README, no fixtures) = warn locally / hard fail in CI.
+
+import { readdirSync } from "node:fs"
+import { dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+
+function fixtureCaptureStatus(dir: string): "captured" | "pending-declared" | "undeclared-empty" {
+  let files: string[] = []
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".json"))
+  } catch {
+    files = []
+  }
+  if (files.length > 0) return "captured"
+  if (existsSync(join(dir, "README.md"))) return "pending-declared"
+  return "undeclared-empty"
+}
+
+function assertFixtureCaptureStatus(dir: string, harness: string, isCI: boolean): string {
+  const status = fixtureCaptureStatus(dir)
+  if (status === "pending-declared") {
+    console.error(
+      `W4-PARTIAL: adapters/${harness}/fixtures capture pending (README declares it) — see fixtures/README.md`,
+    )
+  } else if (status === "undeclared-empty") {
+    const msg =
+      `undeclared-empty fixtures dir: restore README.md (declare capture pending) ` +
+      `or run the capture procedure in fixtures/README.md`
+    if (isCI) throw new Error(msg)
+    console.error("WARNING: " + msg)
+  }
+  return status
+}
+
+test("fixtures: every captured payload carries provenance + fields the adapter reads", () => {
+  const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures")
+  const status = assertFixtureCaptureStatus(
+    fixturesDir,
+    "pi",
+    !!process.env.CI && process.env.CI !== "false",
+  )
+  if (status !== "captured") return
+  const files = readdirSync(fixturesDir).filter((f) => f.endsWith(".json"))
+  for (const f of files) {
+    const v = JSON.parse(readFileSync(join(fixturesDir, f), "utf8"))
+    assert.ok(v._provenance, `${f}: missing _provenance`)
+    assert.equal(typeof v._provenance.harness, "string", `${f}: provenance.harness`)
+    assert.ok(v._provenance.harness_version, `${f}: provenance.harness_version required`)
+    assert.ok(v._provenance.captured_at, `${f}: provenance.captured_at required`)
+    const input = v.payload
+    assert.ok(input && typeof input === "object", `${f}: payload must be an object`)
+    // The adapter reads at least one of these tool-input shapes (PiToolInput).
+    const reads =
+      typeof input.path === "string" ||
+      typeof input.file_path === "string" ||
+      typeof input.content === "string" ||
+      typeof input.command === "string" ||
+      Array.isArray(input.edits) ||
+      typeof input.oldText === "string"
+    assert.ok(reads, `${f}: payload has no field the pi adapter reads`)
+  }
+})
+
+test("fixtures: undeclared-empty fails hard under CI, declared-pending passes", () => {
+  const base = mkdtempSync(join(tmpdir(), "ironlint-pi-fixtures-"))
+  try {
+    const pending = join(base, "pending")
+    mkdirSync(pending)
+    writeFileSync(join(pending, "README.md"), "capture pending\n")
+    assert.equal(fixtureCaptureStatus(pending), "pending-declared")
+    assert.doesNotThrow(() => assertFixtureCaptureStatus(pending, "pi", true))
+
+    const bare = join(base, "bare")
+    mkdirSync(bare)
+    assert.equal(fixtureCaptureStatus(bare), "undeclared-empty")
+    assert.throws(() => assertFixtureCaptureStatus(bare, "pi", true), /undeclared-empty/)
+    assert.doesNotThrow(() => assertFixtureCaptureStatus(bare, "pi", false))
+
+    assert.equal(fixtureCaptureStatus(join(base, "missing")), "undeclared-empty")
+  } finally {
+    rmSync(base, { recursive: true, force: true })
   }
 })

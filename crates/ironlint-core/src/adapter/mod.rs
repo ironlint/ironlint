@@ -16,7 +16,9 @@ pub use ops::{
 };
 pub use ops::{plan_install, plan_uninstall};
 pub use plan::PlanStep;
-pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME};
+pub use registry::{
+    adapter_install_surface, all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME,
+};
 
 use std::path::PathBuf;
 

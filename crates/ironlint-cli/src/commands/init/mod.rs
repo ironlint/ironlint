@@ -6,6 +6,7 @@
 //! nonzero. Harness onboarding (wiring ironlint's hook into claude-code,
 //! codex, pi, opencode) is a separate phase handled by `onboard.rs`.
 
+mod git_hook;
 mod onboard;
 mod render;
 mod select;
@@ -13,9 +14,9 @@ mod select;
 use anyhow::{anyhow, Result};
 use std::path::Path;
 
-// Five bools are required by the CLI surface (harness wiring flags); the
-// struct_excessive_bools lint would force a state-machine refactor that
-// obscures direct flag mapping.
+// Seven bools are required by the CLI surface (harness wiring flags + the
+// git floor opt-out); the struct_excessive_bools lint would force a
+// state-machine refactor that obscures direct flag mapping.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Options {
     pub harnesses: Vec<String>,
@@ -25,6 +26,8 @@ pub struct Options {
     pub hook_only: bool,
     pub uninstall: bool,
     pub dry_run: bool,
+    /// Install/remove the git pre-commit floor hook alongside harness hooks.
+    pub git_hook: bool,
 }
 
 /// The universal, stack-agnostic starter config. Two checks that work on any
@@ -134,6 +137,7 @@ mod tests {
             hook_only: true,
             uninstall: false,
             dry_run: false,
+            git_hook: true,
         };
         let err = run(tmp.path(), &opts).unwrap_err();
         assert!(err.to_string().contains("mutually exclusive"));
@@ -151,6 +155,7 @@ mod tests {
             hook_only: false,
             uninstall: false,
             dry_run: false,
+            git_hook: true,
         };
         let code = run(tmp.path(), &opts).unwrap();
         assert_eq!(code, 0); // previously this path returned Err

@@ -15,6 +15,11 @@
 .pi/
 .opencode/
 .agents/
+.codex/
+.context-mode/
+.hallmark/
+.pi-subagents/
+.worktrees/
 .codegraph/
 .understand-anything/
 # cargo-mutants local report directories (current run + previous run rename).
@@ -39,3 +44,6 @@ tests/e2e/.env.e2e
 .mcp.json
 # Node.js dependencies (adapters)
 node_modules/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/

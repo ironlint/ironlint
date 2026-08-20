@@ -7,6 +7,8 @@
 //! at the module level rather than sprinkling `#[allow(dead_code)]` per item.
 #![allow(dead_code)]
 
+pub mod fixtures;
+
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;

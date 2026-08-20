@@ -134,7 +134,21 @@ pub fn run(
 
     match (file, diff) {
         (Some(f), None) => run_file(&engine, f, content, format, explain, require_match),
-        (None, Some(d)) => run_diff(&engine, &d, format, explain, require_match),
+        (None, Some(d)) => run_diff(
+            &mut engine,
+            config,
+            &d,
+            &check_filter,
+            if event_explicit {
+                DiffDispatch::Explicit
+            } else {
+                DiffDispatch::Implicit
+            },
+            allow_external_paths,
+            format,
+            explain,
+            require_match,
+        ),
         (Some(_), Some(_)) => Ok(emit_error(
             format,
             "provide exactly one of --file or --diff",
@@ -258,15 +272,36 @@ pub(crate) fn check_files_individually(
     Ok(out)
 }
 
+/// How `--diff` dispatch interprets the check set, decided once at the CLI
+/// boundary. `Explicit` = the caller pinned `--event` (single-lifecycle
+/// semantics); `Implicit` = bare `--diff` (the git pre-commit floor invokes
+/// it this way), so each check dispatches per its own `on:` lifecycle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiffDispatch {
+    Explicit,
+    Implicit,
+}
+
 /// Check every non-deleted changed file in a unified diff. Checks read each
 /// file's current on-disk content (checks don't consume diffs).
 ///
-/// When `event == "pre-commit"` the engine's `check_set` is called once over
-/// the full set of changed paths (run-once semantics). For all other events
-/// the per-file loop runs each file through `check_with_explain` individually.
+/// Dispatch depends on [`DiffDispatch`]:
+///
+/// - **Explicit** (single-lifecycle, unchanged semantics): `pre-commit` runs
+///   each check once over the set (`check_set`, run-once); `write` runs each
+///   check per changed file through `check_with_explain`.
+/// - **Implicit**: each check dispatches per its own `on:` lifecycle,
+///   mirroring the bare sweep — write-lifecycle checks once per matching
+///   file, pre-commit-lifecycle checks once over the whole set. A dual-
+///   lifecycle check is batched only, so it is never double-run.
+#[allow(clippy::too_many_arguments)]
 fn run_diff(
-    engine: &IronLintEngine,
+    engine: &mut IronLintEngine,
+    config: &Path,
     diff: &Path,
+    user_checks: &HashSet<String>,
+    dispatch: DiffDispatch,
+    allow_external_paths: bool,
     format: OutputFormat,
     explain: bool,
     require_match: bool,
@@ -282,26 +317,104 @@ fn run_diff(
         .map(|f| f.path.clone())
         .collect();
 
-    // Pre-commit: run each check once over the entire changed set.
-    if engine.event() == "pre-commit" {
-        let verdict = engine.check_set(&non_deleted)?;
+    // Explicit event: single-lifecycle dispatch, unchanged semantics.
+    if dispatch == DiffDispatch::Explicit {
+        // Pre-commit: run each check once over the entire changed set.
+        if engine.event() == "pre-commit" {
+            let verdict = engine.check_set(&non_deleted)?;
+            emit(&verdict, format)?;
+            return Ok(exit_code(&verdict, require_match));
+        }
+
+        // Write (and any future per-file event): loop once per changed file.
+        let folded = match check_files_individually(engine, &non_deleted) {
+            Ok(f) => f,
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        };
+        let verdict = Verdict::from_outcomes(
+            folded.blocks,
+            folded.errors,
+            folded.passed,
+            folded.elapsed_ms,
+        );
+        if explain {
+            print_explain(&folded.explains);
+        }
         emit(&verdict, format)?;
         return Ok(exit_code(&verdict, require_match));
     }
 
-    // Write (and any future per-file event): loop once per changed file.
-    let folded = match check_files_individually(engine, &non_deleted) {
-        Ok(f) => f,
-        Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
-    };
-    let verdict = Verdict::from_outcomes(
-        folded.blocks,
-        folded.errors,
-        folded.passed,
-        folded.elapsed_ms,
-    );
+    // Implicit: per-check lifecycle dispatch, mirroring the bare sweep.
+    let classes = crate::commands::sweep::classify_checks(engine.checks(), user_checks);
+    let mut blocks = Vec::new();
+    let mut errors = Vec::new();
+    let mut passed = Vec::new();
+    let mut explains = Vec::new();
+    let mut elapsed: u64 = 0;
+
+    // Phase 1 — write-lifecycle checks, one invocation per matching file.
+    if !classes.per_file.is_empty() {
+        engine.set_check_filter(classes.per_file.clone());
+        // Prune to files at least one phase-1 check scopes to; without this,
+        // every changed file would produce a no-op engine call and a
+        // telemetry row (same reasoning as the sweep's phase 1).
+        let scoped: Vec<PathBuf> = non_deleted
+            .iter()
+            .filter(|f| {
+                classes
+                    .per_file
+                    .iter()
+                    .any(|id| engine.check_matches_path(id, f))
+            })
+            .cloned()
+            .collect();
+        match check_files_individually(engine, &scoped) {
+            Ok(folded) => {
+                blocks.extend(folded.blocks);
+                errors.extend(folded.errors);
+                passed.extend(folded.passed);
+                explains.extend(folded.explains);
+                elapsed = elapsed.saturating_add(folded.elapsed_ms);
+            }
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        }
+    }
+
+    // Phase 2 — pre-commit-lifecycle checks: ONE invocation per check over
+    // the whole changed set (the engine scope-filters per check). A second
+    // engine is loaded because the event is fixed at load time; the trust
+    // gate already ran for this config path in `check::run`.
+    if !classes.batched.is_empty() {
+        let options = CheckOptions {
+            checks: classes.batched.clone(),
+            event: "pre-commit".to_string(),
+            allow_external_paths,
+            force: false,
+        };
+        let batch_engine = match IronLintEngine::builder().with_options(options).load(config) {
+            Ok(e) => e,
+            // Defensive: `config` already parsed and loaded successfully once
+            // in `check::run` for this exact path, so this reload isn't
+            // expected to fail in practice. Kept as a real error path (not
+            // unwrapped) in case that invariant ever breaks.
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        };
+        match batch_engine.check_set(&non_deleted) {
+            Ok(v) => {
+                elapsed = elapsed.saturating_add(v.elapsed_ms);
+                blocks.extend(v.blocks);
+                errors.extend(v.errors);
+                passed.extend(v.passed);
+            }
+            // Defensive: `check_set` currently has no fallible path; kept so
+            // a future fallible variant isn't silently swallowed.
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        }
+    }
+
+    let verdict = Verdict::from_outcomes(blocks, errors, passed, elapsed);
     if explain {
-        print_explain(&folded.explains);
+        print_explain(&explains);
     }
     emit(&verdict, format)?;
     Ok(exit_code(&verdict, require_match))
