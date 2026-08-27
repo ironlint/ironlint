@@ -1,9 +1,9 @@
 # pi contract fixtures (W4 — specs/2026-08-17-git-floor-hook-and-self-defense-design.md)
 
-Pinned **live-captured** PreToolUse payloads, one per tool shape the adapter
-reads. The contract suites (`crates/ironlint-cli/tests/hook_contract_claude_code.rs`)
-load these as the happy-shape pin; embedded synthetic payloads remain for
-malformed/adversarial edge cases.
+Pinned **live-captured** tool_call payloads, one per tool shape the adapter
+reads (`write`, `edit`, `bash`). The pi contract suite
+(`adapters/pi/test/index.test.ts`) loads these as the happy-shape pin;
+embedded synthetic payloads remain for malformed/adversarial edge cases.
 
 ## Schema
 
@@ -34,8 +34,10 @@ A fixture without a parseable provenance header fails the contract tests
 4. On a pi release touching hooks: run the `adapter-drift-audit`
    skill, recapture, bump `harness_version`.
 
-## Pending
+## Status
 
-Fixtures not yet captured in this environment (no live pi session
-available). Until `write.json`/`bash.json` exist, the contract suites fall
-back to embedded synthetic payloads and print a loud capture-pending note.
+Captured (2026-08-27) from a real headless pi session (`pi -p -a`, model
+`openrouter/deepseek/deepseek-v4-flash-0731`, pi 0.84.3). `write.json` /
+`bash.json` / `edit.json` each carry a provenance-stamped `_provenance`
+header and a byte-verbatim `tool_call` payload (only the scratch abspath
+sanitized to `__CWD__`).

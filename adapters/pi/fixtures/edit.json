@@ -1,0 +1,17 @@
+{
+	"_provenance": {
+		"harness": "pi",
+		"harness_version": "0.84.3",
+		"captured_at": "2026-08-27T22:51:19Z",
+		"captured_by": "throwaway project-scoped capture extension (`api.on(\"tool_call\")` appending JSON to telemetry.ndjson) during a real headless pi session (`pi -p -a` openrouter/deepseek/deepseek-v4-flash-0731) in a scratch repo; payload is the byte-verbatim tool_call `input` (the PiToolInput the adapter reads; toolName edit, envelope toolCallId + any pi bookkeeping omitted), only the scratch abspath sanitized (__CWD__ placeholder)"
+	},
+	"payload": {
+		"path": "__CWD__/hello.txt",
+		"edits": [
+			{
+				"oldText": "write-test",
+				"newText": "edited-ok"
+			}
+		]
+	}
+}

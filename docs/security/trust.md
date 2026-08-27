@@ -47,6 +47,25 @@ self-trust). It cannot reliably classify shell commands that construct
 `ironlint trust` through variable substitution, such as `iron$(echo lint) trust`;
 treat the Bash gate as protection for direct shell forms, not a shell sandbox.
 
+## The adapter installation surface
+
+The same Bash gate also defends the adapter installation artifacts —
+`~/.claude/settings.json`, `.claude/settings.local.json`, `.codex/hooks.json`,
+`.pi/extensions/`, `.opencode/plugins/` — the files `init` writes when it
+installs a harness's rails. A Bash write, move, delete, or `chmod` against any
+of those is denied the same way a policy-surface write is. Project-scoped
+settings ARE repo paths, so a normal check scoping them
+(`.claude/settings*.json` and friends) covers the agent's file tools editing
+them too; the authoring guide suggests this.
+
+This closes only the Bash path. Home-scoped harness settings
+(`~/.claude/settings.json`) sit outside every repo glob's reach, so the
+agent's *file tools* can still edit them ungated — that is the gate's honest
+residual, not a sandbox guarantee. The `--no-verify`/`core.hooksPath`
+git-bypass forms and the variable-substitution indirection
+(`iron$(echo lint)`-style) share the same known gap: the gate is protection
+for direct shell forms only, and a human typing at a terminal is untouched.
+
 ## How verification works
 
 Before loading the engine or running any check, `ironlint check` recomputes the hash and compares it to the blessed entry for that config's path. On a missing or mismatched entry it stops with a trust error (exit `4`) and a hint to re-bless — no check runs:
