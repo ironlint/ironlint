@@ -463,3 +463,7 @@ E2E in `tests/cli_e2e_gate_bash.rs`; W4 fixtures + rewired contract tests +
    The `adapters` job in `.github/workflows/ci.yml` installs both
    (`actions/setup-node` + `oven-sh/setup-bun`), and
    `scripts/ci-adapters.sh` fails loudly when either tool is missing.
+5. **Follow-ons discovered in post-implementation review** (adapter Bash
+   substring pre-filters orphaning the W3 surface; `GIT_CONFIG_*` env
+   injection) are scheduled in
+   `plans/2026-08-17-floor-hook-spec-completion.md` (Tasks 1–2).

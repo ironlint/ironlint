@@ -225,6 +225,9 @@ export default function ironlintExtension(pi: PiExtensionAPI): void {
     // the command would let the agent free itself (`ironlint trust`, or a Bash
     // write to `.ironlint.yml` / `.ironlint/scripts/`). The deny logic lives in
     // `ironlint gate-bash` — the single source shared across every adapter.
+    // Every Bash call pays the gate: measured ~5.6ms/call with a release
+    // binary (100 invocations = 0.92s) — cheap next to the per-shim keyword
+    // drift a substring pre-filter would re-introduce.
     if (toolName === "bash") {
       const command = typeof input.command === "string" ? input.command : ""
       const res = runIronLint(["gate-bash"], command)

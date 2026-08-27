@@ -2041,6 +2041,10 @@ mod tests {
         assert_allows("git push origin main");
         assert_allows("git config user.name test");
         assert_allows("git status");
+        // Innocent env assignments before git (non-config vars) must not trip
+        // the GIT_CONFIG_* detector: only a var naming core.hooksPath blocks.
+        assert_allows("GIT_EDITOR=vim git commit");
+        assert_allows("env FOO=bar git commit -m x");
     }
 
     // --- decide_with_home: explicit HOME normalization parity with the

@@ -82,7 +82,10 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       // Decides whether the command would let the agent free itself
       // (`ironlint trust`, or a Bash write to `.ironlint.yml` /
       // `.ironlint/scripts/`). The deny logic lives in `ironlint gate-bash` —
-      // the single source shared across every adapter. Block contract =
+      // the single source shared across every adapter. Every Bash call pays
+      // the gate: measured ~5.6ms/call with a release binary (100 invocations
+      // = 0.92s) — cheap next to the per-shim keyword drift a substring
+      // pre-filter would re-introduce. Block contract =
       // throw (mirrors the existing exit-2 write/edit path). Spawn via
       // `Bun.spawn` (async, like the check path — a sync spawn blocks
       // opencode's event loop for the full duration).
