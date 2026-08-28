@@ -12,6 +12,7 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 ## Active
 
 - [`2026-08-17-floor-hook-spec-completion`](2026-08-17-floor-hook-spec-completion.md) — pre-filter removal (adapters route all Bash to gate-bash), GIT_CONFIG env-injection gate, empty-fixture CI failure, spec closeout, trust + commit + smoke.
+- [`2026-08-28-gate-bash-floor-review-fixes`](2026-08-28-gate-bash-floor-review-fixes.md) — adversarial-review remediation: 20 verified findings (gate-bash bypasses, floor-hook chaining/config-guard holes, adapter asymmetry, fixture/docs drift); subagent-per-lane orchestration, two maintainer decisions pending (D1 floor-first chaining, D2 config-guard removal).
 
 ## Future
 
