@@ -1,5 +1,10 @@
 # IronLint — OpenCode adapter
 
+This page describes the existing unversioned write-hook installation. It does not
+implement v1 completed-edit feedback or external acceptance. See
+[current adapter status](../../docs/adapters/README.md) and the
+[v1 plan](../../plans/2026-09-05-ironlint-v1-implementation.md) before new setup.
+
 OpenCode plugin integration for IronLint. A static per-file check that uses OpenCode's pre-edit hook to run checks before each edit lands.
 
 | OpenCode hook | Action |
@@ -108,7 +113,7 @@ per-shim keyword pre-filter — the matcher is the single source of truth, so
 the keyword list can't drift across adapters). The deny decision is shared
 across every adapter via `ironlint gate-bash`. The branch
 runs before the config-existence check, so it fires even in a project with no
-`.ironlint.yml`. See [The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
+`.ironlint.yml`. See [The trust guide](../../docs/security/trust.md#existing-bash-guardrail)
 for the protected paths and the shell-classification boundary.
 
 ## Known gaps

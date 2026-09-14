@@ -9,7 +9,7 @@
 //! Pure of I/O and state except the process HOME (used to normalize `~` /
 //! `$HOME` in adapter-surface paths — see `decide_with_home`); the
 //! `ironlint gate-bash` subcommand and the adapter hooks are thin shims
-//! around it. See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
+//! around it. See `docs/architecture.md`.
 //!
 //! Threat tier: lazy non-reasoning models. Blocks direct forms + light
 //! de-obfuscation, including git's `GIT_CONFIG_*` env-injection spelling of
@@ -1625,7 +1625,7 @@ mod tests {
     // v0.9.2 — `sh -c` descent + bare `VAR=val` prefix bypasses.
     // Both let a lazy non-reasoning model run `ironlint trust` through its
     // Bash tool despite the gate. See
-    // plans/2026-07-07-bash-gate-sh-c-and-bare-env-bypasses.md.
+    // docs/architecture.md.
     // =====================================================================
 
     // --- Task 1: `sh -c 'ironlint trust'` / `bash -c "ironlint trust"` ---
@@ -1766,7 +1766,7 @@ mod tests {
 
     // =====================================================================
     // W3 — harness self-defense: adapter installation surface + git floor
-    // (specs/2026-08-17-git-floor-hook-and-self-defense-design.md).
+    // (docs/architecture.md).
     // =====================================================================
     //
     // The adapter installation artifacts (settings files + plugin dirs the
@@ -2218,7 +2218,7 @@ mod tests {
     // =====================================================================
     // L1 (2026-08-28 review): lexical path normalization + backslash
     // de-obfuscation + empty-quoted core.hooksPath set. See
-    // plans/2026-08-28-gate-bash-floor-review-fixes.md (Task L1).
+    // docs/architecture.md.
     // =====================================================================
 
     // --- L1.1: lexical path normalization (collapse //, drop ., resolve ..) ---

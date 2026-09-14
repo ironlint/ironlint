@@ -1,55 +1,25 @@
 # IronLint
 
-> IronLint is a local, static policy gate for AI coding agents: every proposed edit runs the shell checks from a trusted `.ironlint.yml` before it lands, and any nonzero exit (1–125) blocks the write. A machine-readable verdict with stable exit codes makes the result consumable by CI and agent adapters.
-
-A check is a file glob plus a shell command (or a `steps:` sequence). IronLint hands the command proposed content on stdin plus a small env ABI (`$IRONLINT_FILE`, `$IRONLINT_FILES`, `$IRONLINT_ROOT`, `$IRONLINT_EVENT`, `$IRONLINT_TMPFILE`, `$IRONLINT_BIN`, and optionally `$IRONLINT_PROPOSED_MANIFEST`) and reads back only the exit code. There are no engines, severities, or output parsing; the check owns the decision. Checks fire on two lifecycles: `write` (per edit) and `pre-commit` (once over the selected matching file set). An out-of-repo trust store means an unblessed config never runs. Verdict JSON schema 6 and telemetry schema 5 are versioned wire formats consumed by CI and the Claude Code, Codex, OpenCode, and pi adapters.
+> Rust command-check evaluation for AI coding workflows. V1 core/CLI exists;
+> external acceptance and live completed-edit feedback remain in progress.
 
 ## Start here
 
-- [Documentation index](docs/README.md): table of contents for every guide and reference.
-- [Getting started](docs/getting-started.md): install the binary, scaffold a `.ironlint.yml`, and gate your first edit.
-- [Architecture](docs/architecture.md): how config, the trust store, the check runner, and the verdict fit together (with a diagram).
+- [Architecture](docs/architecture.md): implemented flow, source map, gaps.
+- [Active plan](plans/2026-09-05-ironlint-v1-implementation.md): resume state, next packet, evidence.
+- [V1 contract](specs/2026-09-05-ironlint-v1-design.md): breaking-release requirements.
+- [Agent instructions](AGENTS.md): working rules.
 
-## Reference
+## Usage
 
-- [CLI reference](docs/reference/cli.md): every subcommand and flag — `check`, `trust`, `validate`, `init`, `doctor`, `explain`, `show-resolved-config`, `schema`, `update`, `watch`, and `gate-bash`.
-- [Config schema](docs/reference/config-schema.md): the `.ironlint.yml` format — `checks:` entries with `files`, `run` or `steps`, `on`, `name`, plus `extends:` and `execution:`.
-- [Verdict JSON](docs/reference/verdict-json.md): the machine-readable verdict wire format (schema 6), statuses, and the exit-code contract (0/1/2/3/4).
-- [show-resolved-config](docs/reference/show-resolved-config.md): print the post-`extends:` merged check set, attributing each check to its source file.
+- [Getting started](docs/getting-started.md): build and evaluate a v1 policy.
+- [Config schema](docs/reference/config-schema.md): version 1, run, files, change/accept.
+- [Running checks](docs/operating/running-checks.md): acceptance and change triggers.
+- [Verdict JSON](docs/reference/verdict-json.md): schema 7, output bytes, statuses, exits.
+- [Writing checks](docs/writing-checks/README.md): actual-tree ABI and limits.
+- [Adapters](docs/adapters/README.md): current installations and v1 gaps.
+- [Documentation index](docs/README.md): other current reference pages.
 
-## Writing checks
-
-- [Anatomy of a check](docs/writing-checks/README.md): `files`, `run`/`steps`, the stdin/env ABI, and the exit-code contract.
-- [Check recipes](docs/writing-checks/recipes.md): grep checks, linters over stdin, and whole-tree tools.
-
-## Configuring
-
-- [Targeting files](docs/configuring/targeting-files.md): the `files:` glob semantics each check matches.
-- [Disabling a check in-line](docs/configuring/disabling.md): `ironlint-disable:` directives.
-- [Sharing config with extends](docs/configuring/inheritance.md): compose `.ironlint.yml` files across repos; local checks win on collision.
-
-## Operating
-
-- [Running checks](docs/operating/running-checks.md): `ironlint check` in file, diff, and repository-sweep modes, exit codes, and fail-open behavior.
-- [Inspecting your config](docs/operating/inspecting-config.md): debug scope and check resolution with `explain` / `show-resolved-config`.
-- [Telemetry](docs/operating/telemetry.md): the `.ironlint/log.jsonl` check log and its 10 MiB rotation policy.
-- [Diagnostics](docs/operating/diagnostics.md): `ironlint doctor` environment, config, and adapter health checks.
-- [Watching checks](docs/operating/watching-checks.md): follow live check runs with `ironlint watch`.
-
-## Adapters
-
-- [Adapters overview](docs/adapters/README.md): the shared adapter contract — the check ABI, exit codes, and fail-open-on-internal-error behavior.
-- [Claude Code adapter](docs/adapters/claude-code.md): the `PreToolUse` integration for edits and the Bash policy gate.
-- [Codex adapter](adapters/codex/README.md): the `PreToolUse` guardrail for `apply_patch` and Bash.
-- [OpenCode adapter](docs/adapters/opencode.md): the `tool.execute.before` plugin gate.
-- [pi adapter](adapters/pi/README.md): the `tool_call` pre-write gate for pi.
-
-## Security
-
-- [The trust store](docs/security/trust.md): why IronLint refuses an unblessed config, and how `ironlint trust` works.
-
-## Optional
-
-- [Visual elevator pitch](docs/visual-elevator-pitch.md): a one-screen visual overview.
-- [Changelog](CHANGELOG.md): release notes.
-- [Repo guidance (AGENTS.md)](AGENTS.md): conventions for contributors and coding agents working in this repo.
+Read the assigned packet, relevant contract sections, and source. Historical plans
+are removed. Backward compatibility and automatic conversion/rollback are not v1
+release requirements.

@@ -1,6 +1,5 @@
 //! The git pre-commit "floor" hook installed by `ironlint init` and removed
-//! by `ironlint init --uninstall` (specs/2026-08-17-git-floor-hook-and-self-defense-design.md,
-//! W1).
+//! by `ironlint init --uninstall` (see docs/architecture.md).
 //!
 //! One hook covers every committer — supported agents, unsupported agents,
 //! humans — independent of any harness adapter being installed, present, or

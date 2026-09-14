@@ -1,5 +1,9 @@
 # Watching checks
 
+`watch` reads the existing write/pre-commit telemetry log. V1 evaluation does not
+currently populate it, so this UI is not a view of v1 acceptance or change results.
+Its final disposition is tracked in the [v1 plan](../../plans/2026-09-05-ironlint-v1-implementation.md).
+
 `ironlint watch` gives you a live, read-only view of the check runs already
 recorded in `.ironlint/log.jsonl`. Run it in a terminal beside your coding
 agent when you want to see which checks are passing, blocking edits, or failing

@@ -1,5 +1,10 @@
 # Telemetry — `.ironlint/log.jsonl`
 
+This is the log format still produced by the unversioned write/pre-commit runner.
+The v1 evaluator does not append these records. Retention or removal of this
+surface is part of the [v1 cleanup](../../plans/2026-09-05-ironlint-v1-implementation.md);
+it is not a v1 acceptance evidence store.
+
 IronLint appends newline-delimited JSON records to `.ironlint/log.jsonl` as checks run. The active file is owner-only (`0o600` on Unix), and downstream tools read it one line at a time. A file check produces one record; a repository sweep can produce one record per write-lifecycle file plus one batched record for pre-commit checks.
 
 **Schema version:** `5`. This is a code constant (`telemetry::SCHEMA_VERSION`) that bumps when the record shape changes. It is **not** written into each line — there is no per-line version field.

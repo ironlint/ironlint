@@ -711,7 +711,7 @@ test("tool_call: exit-4 (untrusted config) blocks with the trust message", () =>
   }
 })
 
-// --- W4 pinned contract fixtures (specs/2026-08-17-...-design.md) -----------
+// --- W4 pinned contract fixtures (docs/architecture.md) -----------
 //
 // The adapter's happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
 // `adapters/pi/fixtures/` (provenance-stamped; see the README there). This

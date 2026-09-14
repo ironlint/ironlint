@@ -1,5 +1,5 @@
 //! `ironlint check --diff` lifecycle dispatch — the W1-R5 pin
-//! (specs/2026-08-17-git-floor-hook-and-self-defense-design.md).
+//! (docs/architecture.md).
 //!
 //! The git pre-commit floor runs `ironlint check --diff <file>` with NO
 //! `--event`, so bare `--diff` must dispatch each check per its own `on:`

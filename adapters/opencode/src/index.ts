@@ -11,7 +11,7 @@ import { basename, isAbsolute, join, sep } from "node:path"
 // note. Tracked until the apply_patch tool is wired through the adapter.
 // `bash` is gated by the bash-gate branch below, which shells out to
 // `ironlint gate-bash` (the shared Rust matcher) — see
-// docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+// docs/architecture.md.
 const GATED_TOOLS = new Set(["edit", "write", "bash"])
 
 // R3: filenames ironlint recognizes as policy files. Edits to these files

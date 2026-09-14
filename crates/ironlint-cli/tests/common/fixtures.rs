@@ -1,4 +1,4 @@
-//! W4 contract-fixture loading (specs/2026-08-17-git-floor-hook-and-self-defense-design.md).
+//! W4 contract-fixture loading (docs/architecture.md).
 //!
 //! Each harness's `adapters/<harness>/fixtures/` dir holds pinned,
 //! provenance-stamped payloads captured from a LIVE harness session. The

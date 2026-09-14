@@ -1,10 +1,12 @@
 # IronLint v1.0 — deterministic acceptance gates
 
-**Date:** 2026-09-05
-**Status:** Proposed specification, partially implemented in core/CLI; no claim of enforcing acceptance integration or current adapter support.
-**Scope:** Product contract, core runner, configuration, adapter boundary, and migration from 0.4.
-**Supersedes for v1:** The universal pre-write promise in `2026-06-28-ironlint-checks-pipeline-design.md` and the local anti-bypass/floor-enforcement direction in `2026-08-17-git-floor-hook-and-self-defense-design.md`.
-**Preserves:** Developer-declared static checks, arbitrary command execution, deterministic verdicts, and a harness-agnostic core.
+**Updated:** 2026-09-14
+**Status:** Current v1 release contract. Core/CLI evaluation is implemented;
+external acceptance, live feedback, and installation/code cleanup remain open.
+**Scope:** A breaking release. No legacy config execution, schema-6 compatibility,
+automatic conversion, migration-report command, or coordinated rollback is required.
+**Implementation:** [current architecture](../docs/architecture.md).
+**Execution:** [active plan](../plans/2026-09-05-ironlint-v1-implementation.md).
 
 ## 1. Product decision
 
@@ -171,7 +173,7 @@ both events.
 
 ## 6. Configuration
 
-The following is the new v1 format, not an example for the 0.4 parser:
+The implemented v1 format:
 
 ```yaml
 version: 1
@@ -216,8 +218,9 @@ their location in the candidate is not itself evidence of approval.
 - Run commands with `sh -c` from the supplied root, retaining the current
   supported platform scope. No new cross-platform shell guarantee is added.
 - Stdin is closed. Commands read the actual evaluated tree.
-- Preserve explicit environment filtering; do not inherit the agent's complete
-  credentials. Document the retained environment as part of the release ABI.
+- Retain only `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`, and `LC_*` from the
+  parent environment; add the reserved variables below. The integration must
+  separately isolate filesystem access and publication credentials.
 - Supply `IRONLINT_ROOT`, `IRONLINT_EVENT`, and `IRONLINT_BIN`.
 - Do not supply legacy proposed-content, temporary-file, or per-file variables
   under v1 semantics. Clear inherited reserved `IRONLINT_*` values first.
@@ -239,8 +242,8 @@ evaluated candidate into a different accepted candidate.
 
 Command success means the command returned zero. Ordinary nonzero exits are
 violations; unavailable execution, signal termination, and timeout are errors.
-Use the existing reserved shell failure classification for 126/127 and
-signal-style statuses. A command's diagnostics never change its verdict.
+Classify exits 126/127 and all exits at least 128 as execution errors,
+along with signal termination and timeout. A command's diagnostics never change its verdict.
 
 Pinned tools and controlled inputs are necessary for repeatable command
 results. IronLint guarantees deterministic dispatch and classification, not
@@ -248,7 +251,7 @@ reproducibility of arbitrary external programs.
 
 ## 8. CLI and verdict contract
 
-Proposed v1 surface:
+Implemented v1 evaluation surface:
 
 ```text
 ironlint check                         # accept evaluation, all checks
@@ -279,7 +282,7 @@ Keep outer exit numbers: `0` successful evaluation, `1` config/input error,
 For mixed results, errors take precedence over violations. Preserve all
 completed check results in JSON.
 
-JSON advances from schema 6 to schema 7 and includes:
+V1 JSON uses schema 7 and includes:
 
 - `schema`, `event`, and aggregate `status`;
 - ordered check results with ID, outcome, exit status where available, captured
@@ -290,7 +293,8 @@ JSON advances from schema 6 to schema 7 and includes:
 Aggregate outcomes are `pass`, `violation`, `error`, and `not_run`. A change
 invocation selecting no checks may exit zero with `not_run`; it must not say the
 workspace passed. Acceptance requires a nonempty policy and every check passing.
-The release implementation must pin the exact schema in contract fixtures.
+The exact implemented shape is documented in [Verdict JSON](../docs/reference/verdict-json.md)
+and exercised by core verdict and CLI v1 tests.
 
 An enforcing caller requires exit zero, valid matching-version output, event
 `accept`, and a complete `pass`. It owns candidate/result binding; schema 7 is
@@ -332,8 +336,7 @@ history of successful edit checks.
 ## 10. Pre-write checks and local Git hooks
 
 Generic pre-write blocking is not part of the v1 required implementation.
-Existing preview behavior is frozen during migration and then removed from
-the v1 path. Ordinary CI commands should not need a separate stdin implementation.
+Existing preview behavior is removed as part of the breaking release. Ordinary CI commands should not need a separate stdin implementation.
 
 A future pre-write feature must be explicitly scoped to commands consuming the
 proposal, exact tool semantics, and a harness-controlled write operation. It
@@ -371,7 +374,7 @@ Retain the Rust core runner and thin CLI where they directly implement this
 contract. Place harness installation and event translation outside the pure
 evaluation layer. Do not reorganize crates solely for architectural symmetry.
 
-Delete the Bash-gate crate after safe adapter migration. Retain useful config
+Delete the Bash-gate crate after safe removal of its installed registrations. Retain useful config
 validation, scope matching, process execution, consent, and diagnostic code.
 Remove legacy features from the v1 execution path rather than layering another
 policy engine over them.
@@ -380,36 +383,32 @@ Do not build a local promotion service to make the first release possible.
 Ship one tested external acceptance integration and one tested feedback adapter.
 Additional harnesses may remain explicitly feedback-only or capture-pending.
 
-## 13. Migration and teardown
+## 13. Breaking release and removal
 
-1. Freeze expansion of `gate-bash`, proposal simulation, and self-defense.
-   Correct documentation that describes local hooks as unavoidable.
-2. Add the versioned v1 evaluator and fixtures without silently changing 0.4
-   configuration semantics. Keep the legacy path only for the transition.
-3. Provide a reviewable migration report: flatten `extends`, translate `steps`
-   into scripts, map pre-commit checks to acceptance, and identify every stdin,
-   per-file ABI, suppression, and write-blocking dependency needing a rewrite.
-   Do not automatically approve the resulting command changes.
-4. Move every migrated rule into acceptance. Add `change` only where early
-   failures are useful. Rewrite proposed-content checks to inspect the tree.
-5. Establish and validate the external acceptance boundary before representing
-   the migrated installation as enforced. Local-only users receive an explicit
-   capability statement, not an implied replacement guarantee.
-6. Upgrade/uninstall IronLint-owned Bash hook entries before removing the
-   command: legacy adapters fail closed when `gate-bash` disappears. Preserve
-   unrelated hooks and user edits; do not delete entire settings files.
-7. In the v1 release, reject legacy config with a migration explanation; never
-   reinterpret it. Remove the legacy Bash and preview paths, automatic floor
-   installation, and their dead tests after equivalent retained-contract tests
-   exist. Keep schema-6/exit compatibility fixtures during the transition.
-8. Freeze watch UI, telemetry expansion, self-update changes, and config sharing
-   features. Retain them only where keeping them does not complicate the new
-   contract; no redesign work is justified for them in this release.
+Backward compatibility is not a release requirement. Remove unversioned config
+execution, schema-6 consumers, proposal stdin/per-file ABI, inline suppression,
+unused diff selection, the Bash classifier, and automatic floor-hook installation.
+Reject old configs with a clear unsupported-format error and current authoring
+instructions. Do not build automatic conversion, a migration-report command, or
+coordinated binary/config/adapter rollback.
 
-No migration step changes an installed blocking path to feedback without an
-explicit migration action. Rollback during transition restores matching binary,
-adapter, and config versions together; do not leave an old hook calling a removed
-command. Existing specifications remain historical records.
+Use existing installer ownership records to remove or replace IronLint-owned
+registrations before deleting the commands they call. Preserve unrelated hooks,
+chains, settings, and user edits. Ambiguous ownership requires a concrete manual
+cleanup instruction; never delete an entire settings file. Exercise cleanup in a
+temporary home/repository, including chained hooks and a repeated invocation.
+This prevents stranded installations without preserving old execution semantics.
+
+Finish and prove the external acceptance integration and one feedback adapter
+before presenting the new installation as complete. Unsupported adapters must
+be clearly identified and have no active registrations calling deleted commands.
+`init`, generated authoring instructions, CLI help, examples, and current guidance
+must describe the implemented v1 behavior when the release ships.
+
+Freeze telemetry/watch/self-update expansion. Retain those surfaces only where
+useful under v1; otherwise remove them with a release note. No redesign is required.
+Keep current architecture and the active plan up to date; remove obsolete planning
+and design documents instead of maintaining a historical documentation tree.
 
 ## 14. Release acceptance tests
 
@@ -433,7 +432,7 @@ The following are release gates, not optional demonstrations:
    acceptance checks. Empty acceptance policy is an error.
 9. **Resource limits:** Chatty commands and descendant processes cannot defeat
    the documented output/deadline bounds. Truncated diagnostics are marked.
-10. **Migration:** Removing IronLint entries preserves unrelated hooks and does
+10. **Installation cleanup:** Removing IronLint entries preserves unrelated hooks and does
     not strand a legacy fail-closed adapter calling a missing command.
 
 Core changes retain the repository's regression-test, separate code-review,
@@ -441,77 +440,7 @@ clippy, and per-file region-coverage requirements. Adapter claims require live
 contract evidence. A failed enforcement test blocks an enforcement claim, not
 merely a documentation checkbox.
 
-## 15. Design pressure test
-
-### Decision Inventory
-
-The explicit decisions are: mutable intermediate states (§1), external acceptance
-authority (§4), fresh candidate evaluation (§3), two events (§5), full acceptance
-selection (§5), batch execution (§5), minimal versioned config (§6), bounded
-serial commands (§7), schema-7 results (§8), post-edit adapters (§9), no default
-preview (§10), and consent separate from enforcement (§11).
-
-### Irreversibility Triage
-
-Configuration, command ABI, and JSON changes are published one-way contracts;
-versioning and the explicit legacy transition isolate them (§§6–8, 13).
-Installation removal is isolated by owned-entry migration and matched-version
-rollback (§13). The remaining internal implementation choices are reversible.
-
-### Fork Audit
-
-- Sync versus queue: “The result is needed in the same response” applies to
-  edit feedback; the opposing “side effects are idempotent” condition is not
-  established for arbitrary commands, so choose bounded synchronous execution.
-- Batch versus stream: “No freshness SLA is written down” applies; the opposing
-  “must react to individual events as they occur” is not required, so batch at
-  completed operations rather than adding a filesystem event stream.
-- One service versus split: “None of the above is demonstrated today” applies
-  to separate scaling/teams; no “independent cadences” requirement justifies a
-  new service, so retain one executable plus adapters.
-- Migration: “Real data exists in production” corresponds here to installed
-  contracts; “pre-launch ... without anyone noticing” is not established, so
-  use a versioned transition rather than silent replacement.
-- Config versus code: developer policy changes without an IronLint release
-  justify config; the opposing “invariant other code silently assumes” applies
-  to verdict semantics, which remain code. Neither is promoted into the other.
-- No additional fork matches the authority, preview deferral, or consent decisions.
-
-### Corner Scan
-
-- Unmigratable schema: ABSENT — explicit format/schema versions and migration.
-- Side effects without idempotency keys: ABSENT — no automatic retry or remote
-  effect orchestration; repeatable checking is a declared command contract.
-- Test-hostile boundaries: ABSENT — evaluation is independent of harness events.
-- Auth/tenancy bolted on later: ABSENT — external authority is a prerequisite,
-  not a future retrofit to an alleged local security boundary.
-- Unbounded growth: ABSENT — output is capped and no history store is added.
-- Hidden fan-out: ABSENT — one execution per check and a total deadline.
-- Shared mutable state across workers: ABSENT — no verdict cache; acceptance
-  owners must bind results to stable candidates.
-- Clock in the logic: ABSENT — monotonic execution deadlines only.
-- Hard external coupling, no failure mode: ABSENT — every execution failure
-  denies acceptance and has a diagnostic outcome.
-- “Pagination later”: ABSENT — no history/list service is introduced.
-
-### Pre-Mortem
-
-1. A completion hook can be skipped: section 4 forbids calling that integration
-   enforced; ship the external acceptance boundary and test direct bypass.
-2. Tests or scripts are modified to return success: sections 4 and 11 require
-   approved enforcement inputs and explicit treatment of candidate delegation.
-3. An edit event never arrives: section 9 permits missed feedback, but section
-   5 requires a fresh full acceptance run independent of event history.
-
-### Verdict
-
-**PASS WITH CHANGES to the existing design.** Replace universal write gating
-with controlled acceptance, remove the shell classifier, bind evaluation to
-the accepted candidate, protect enforcement inputs externally, and implement
-the versioned migration and release tests above. No findings are discarded.
-The spec does not certify any existing adapter or deployment as enforced.
-
-## 16. Success and stop condition
+## 15. Success and stop condition
 
 The release succeeds when an agent can perform a normal TDD/refactoring session
 without gate-induced edit deadlocks, while a failing or unevaluable candidate

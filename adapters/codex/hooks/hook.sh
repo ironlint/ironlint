@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Codex adapter for ironlint. Gates `apply_patch` edits via Codex's PreToolUse
-# hook — see the 2026-07-02 codex adapter design spec under specs/.
+# hook — see adapters/codex/README.md.
 #
 # Codex's block contract is unlike the exit-code hooks:
 #   ALLOW = exit 0 with EMPTY stdout.
@@ -71,7 +71,7 @@ TOOL_NAME=$(printf '%s' "${EVENT}" | jq -r '.tool_name // empty')
 # let it free itself from ironlint's gate (`ironlint trust`, or a Bash write
 # to `.ironlint.yml` / `.ironlint/scripts/`). The deny logic lives in
 # `ironlint gate-bash` — the single source shared across every adapter. See
-# docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+# docs/architecture.md.
 # Block contract = deny-JSON/exit-0 (codex never blocks via exit code), so the
 # block paths reuse the existing `deny()` helper.
 if [[ "${TOOL_NAME}" == "Bash" ]]; then

@@ -23,7 +23,7 @@ A harness name as the invocation argument: `claude-code`, `codex`, `pi`, or `ope
 
 Codex is a `PreToolUse`-hook harness like claude-code, but its own docs frame the hook as a *guardrail*, not a hard enforcement boundary — factor that into impact judgments (a codex drift degrades a guardrail; the same drift on claude-code degrades the enforcement point itself).
 
-- **Doc sources**: `developers.openai.com/codex/hooks` (hooks reference) and the `codex-rs/hooks/` source tree (ground truth for the exit/JSON decision contract — verified this way once already; see the 2026-07-02 codex adapter design spec under `specs/`).
+- **Doc sources**: `developers.openai.com/codex/hooks` (hooks reference) and the `codex-rs/hooks/` source tree (ground truth for the exit/JSON decision contract — re-audit for the selected version; current implementation details are in `adapters/codex/README.md`).
 - **Re-verify first**: the `tool_input.command` `apply_patch` envelope shape (`*** Begin Patch` / `*** Add File:` / `*** Update File:` / `*** Delete File:` / `*** End Patch`) that `adapters/codex/hooks/hook.sh`'s python3 parser depends on. This is the single most drift-prone contract in the codex adapter — the parser fails closed (deny) on an envelope it doesn't recognize, so drift here surfaces as edits getting wrongly blocked rather than silently let through, but it's still the first thing to re-check.
 
 ## Procedure

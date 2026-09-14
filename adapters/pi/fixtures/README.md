@@ -1,4 +1,4 @@
-# pi contract fixtures (W4 — specs/2026-08-17-git-floor-hook-and-self-defense-design.md)
+# pi contract fixtures (W4 — docs/architecture.md)
 
 Pinned **live-captured** tool_call payloads, one per tool shape the adapter
 reads (`write`, `edit`, `bash`). The pi contract suite

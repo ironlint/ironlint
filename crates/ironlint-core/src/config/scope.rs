@@ -35,15 +35,9 @@ impl ScopeMatcher {
 
 // Property-based tests over `ScopeMatcher`'s glob-matching invariants.
 //
-// The design (docs/superpowers/specs/2026-07-04-phase-5-code-heavy-design.md
-// §5.26) originally listed a fourth "negation correctness" property (a
-// negated glob `!vendor/` excludes what its positive form includes). That
-// property was DROPPED: `ScopeMatcher` has no negation support — it only ORs
-// globs into a single `GlobSet`, so `!vendor/` would be built as a literal
-// glob matching paths that literally start with `!vendor/`. Testing negation
-// would either fail against current behavior or tempt adding an unrequested
-// feature. It is replaced below by an extension-/name-specificity property
-// that instead pins non-match soundness (the matcher doesn't over-match).
+// ScopeMatcher ORs globs into one GlobSet; it does not implement negation.
+// `!vendor/` is a literal pattern. Extension/name specificity below pins
+// non-match soundness without introducing exclusion semantics.
 #[cfg(test)]
 mod proptests {
     use super::*;

@@ -1,4 +1,4 @@
-# opencode contract fixtures (W4 — specs/2026-08-17-git-floor-hook-and-self-defense-design.md)
+# opencode contract fixtures (W4 — docs/architecture.md)
 
 Pinned **live-captured** PreToolUse payloads, one per tool shape the adapter
 reads. The contract suites (`crates/ironlint-cli/tests/hook_contract_claude_code.rs`)

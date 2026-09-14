@@ -17,7 +17,7 @@ pub fn parse_str(input: &str) -> Result<Config> {
         return Err(anyhow!(
             "{lead}. The 0.4 format uses a top-level `checks:` map of \
              `{{ files, run | steps }}` entries — rewrite it. \
-             See specs/2026-06-28-ironlint-checks-pipeline-design.md"
+             Run `ironlint schema` for the supported formats"
         ));
     }
     if let Some(key) = duplicate_mapping_key(input) {

@@ -605,7 +605,7 @@ test("bash fails closed when ironlint is missing", async () => {
   }
 })
 
-// --- W4 pinned contract fixtures (specs/2026-08-17-...-design.md) -----------
+// --- W4 pinned contract fixtures (docs/architecture.md) -----------
 //
 // The adapter's happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
 // `adapters/opencode/fixtures/` (provenance-stamped; see the README there).

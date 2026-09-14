@@ -233,7 +233,7 @@ jobs:
       - name: Extension integration test
         run: PATH="$(pwd)/target/release:${PATH}" node --experimental-strip-types --test adapters/pi/test/*.test.ts
 
-  # W4 (specs/2026-08-17-...-design.md): one lane for every adapter contract
+  # W4 (docs/architecture.md): one lane for every adapter contract
   # suite — the two Rust hook-contract suites plus pi (node) and opencode
   # (bun) — all consuming the pinned provenance-stamped fixtures in
   # adapters/<harness>/fixtures/.

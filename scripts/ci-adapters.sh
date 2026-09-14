@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# W4 (specs/2026-08-17-git-floor-hook-and-self-defense-design.md): one lane
+# W4 (docs/architecture.md): one lane
 # for every adapter contract suite — the two Rust hook-contract suites plus
 # the pi (node) and opencode (bun) suites, all consuming the pinned
 # provenance-stamped fixtures in adapters/<harness>/fixtures/.

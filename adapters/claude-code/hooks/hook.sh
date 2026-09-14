@@ -81,7 +81,7 @@ TOOL_NAME=$(echo "${EVENT}" | jq -r '.tool_name // empty')
 # (`ironlint trust`, or a Bash write to `.ironlint.yml` / `.ironlint/scripts/`).
 # The deny logic lives in `ironlint gate-bash` — the single source shared
 # across every adapter. See
-# docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+# docs/architecture.md.
 if [[ "${TOOL_NAME}" == "Bash" ]]; then
   COMMAND=$(echo "${EVENT}" | jq -r '.tool_input.command // empty')
   # `ironlint gate-bash` exits 0 = allow, 2 = block (reason on stdout), else

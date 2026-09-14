@@ -1,5 +1,10 @@
 # IronLint — pi adapter
 
+This page describes the existing unversioned write-hook installation. It does not
+implement v1 completed-edit feedback or external acceptance. See
+[current adapter status](../../docs/adapters/README.md) and the
+[v1 plan](../../plans/2026-09-05-ironlint-v1-implementation.md) before new setup.
+
 [pi](https://pi.dev) extension integration for IronLint. Mirrors the OpenCode and
 Claude Code adapters: it runs checks on `write` / `edit` tool calls against your
 project's `.ironlint.yml` policy **before they execute**. It is a static,
@@ -115,7 +120,7 @@ can't drift across adapters). The deny decision is shared across every adapter
 via `ironlint gate-bash`. The branch runs before the
 config-existence check, so it fires even in a project with no `.ironlint.yml` —
 exactly when the agent is most motivated to self-trust. See
-[The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
+[The trust guide](../../docs/security/trust.md#existing-bash-guardrail)
 for the protected paths and the shell-classification boundary.
 
 ## Known gaps (v1)

@@ -1,78 +1,61 @@
 # Getting started
 
-IronLint reads a `.ironlint.yml` from your repo root and checks each file an agent edits against the checks you define. This page takes you from an empty repo to a check that blocks a real edit.
+This walkthrough uses the implemented `version: 1` evaluator. Automatic feedback
+and external acceptance integration remain pending. Use a source build from this
+checkout; published binaries may implement an earlier format.
 
-## Install
+## Build
 
-Build the binary from source:
-
-```bash
-cargo build --release
-./target/release/ironlint --version
+```sh
+cargo install --locked --path crates/ironlint-cli
+ironlint --version
 ```
 
-Put `./target/release/ironlint` on your `PATH` so the rest of this guide can call `ironlint` directly. (Prebuilt binaries and a one-line installer are in the [project README](../README.md).)
+A POSIX `sh` must be available. On Windows, use Git Bash or WSL.
 
-> **Windows:** IronLint runs checks via `sh -c` and requires a POSIX shell. On Windows, run it inside **Git Bash** or **WSL**. A stock PowerShell or CMD environment has no `sh`, so `ironlint check` exits `1` and `ironlint doctor` reports a failing `shell` row.
+## Write a policy
 
-## Write your first check
-
-Create a `.ironlint.yml` in your repo root:
+In your project, create `.ironlint.yml` if it does not exist. Review an existing
+policy before replacing it. For a Rust workspace:
 
 ```yaml
+version: 1
 checks:
-  no-debug:
-    files: "src/**/*.ts"
-    run: "! grep -n 'DEBUG'"
+  format:
+    files: ["*.rs", "Cargo.toml"]
+    on: [change, accept]
+    run: cargo fmt --all --check
+  tests:
+    run: cargo test --locked
 ```
 
-A check is `files` plus a `run` command (or `steps`). `files` is the glob it watches; `run` is a shell command IronLint runs against each matching file. IronLint reads only the command's exit code: **any nonzero exit (1–125) blocks the edit**, `0` lets it through. (Optional `on` and `name` fields round it out — see the [config schema](reference/config-schema.md).)
+Every check participates in acceptance. `files` narrows early feedback only;
+commands choose their inputs. They run against the actual tree with stdin closed.
 
-The `run` here negates a grep. `grep` exits `0` when it finds `DEBUG`, so `! grep …` succeeds when the proposed content is clean and fails when it isn't, and the nonzero exit blocks the edit. Grep reads the proposed post-edit content from stdin; `$IRONLINT_FILE` carries the path under check — there is no `{file}` templating.
+## Validate and run
 
-## Trust the config
-
-IronLint runs the commands in your config, so it refuses to run a config it hasn't been told to trust. Review the file, then bless it:
-
-```bash
+```sh
+ironlint validate
 ironlint trust
+ironlint check --event accept --format json
+ironlint check --event change --file src/lib.rs --format json
 ```
 
-This records a hash of the config and its `.ironlint/scripts/` scripts in `~/.config/ironlint/trust.json`. Any later edit to either invalidates the hash, and `ironlint check` refuses to run until you re-bless. See [The trust store](security/trust.md) for why.
+Run `trust` after reviewing the policy and managed scripts; they execute with
+your account's filesystem permissions. Editing approved inputs requires renewed
+consent. For a separate policy/root, use absolute paths explicitly:
 
-## Run a check
-
-Point `ironlint check` at a file:
-
-```bash
-ironlint check --file src/app.ts
+```sh
+ironlint check --config /work/policy.yml --root /work/candidate --event accept --format json
 ```
 
-If `src/app.ts` contains a `DEBUG` marker, the check exits nonzero, and `ironlint check` prints the verdict and exits `2`. A clean file exits `0`. Those exit codes are the contract your agent adapter keys off — see [Running checks](operating/running-checks.md) for the full table.
+The root is the command's working directory. A pass means evaluation succeeded;
+external acceptance requires a caller that protects and binds the same candidate.
+JSON distinguishes `not_run` from `pass`.
 
-To check the *proposed* content of an edit before it lands on disk, pipe it in:
+## Current installation limitation
 
-```bash
-printf 'const x = "DEBUG"\n' | ironlint check --file src/app.ts --content -
-```
-
-The content arrives on the check's stdin, so a check can inspect the new bytes without them ever touching disk.
-
-## Scaffold and connect your agent
-
-The blank page is optional, and so is wiring your agent by hand. From a fresh project, one command does both:
-
-```bash
-ironlint init
-```
-
-`ironlint init` writes a small, stack-agnostic starter `.ironlint.yml`, trusts that new config, then detects your installed agents — Claude Code, Codex, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. It does not inspect manifests or add Rust, Node, or Python-specific checks; choose and add those after reviewing the starter. From then on the check runs on every edit the agent makes; you never call `ironlint check` by hand.
-
-Review the generated checks and adjust. If you change the config after init, re-run `ironlint trust`. Target a single agent with `--harness <name>`, wire all four with `--harness all`, or preview the writes with `--dry-run` — see the [CLI reference](reference/cli.md#ironlint-init) for every flag and the [adapter docs](adapters/README.md) for per-agent details.
-
-## Where to go next
-
-- [Anatomy of a check](writing-checks/README.md) — `files`, `run`, and the exit-code contract in depth
-- [Check recipes](writing-checks/recipes.md) — grep checks, linters over stdin, whole-tree tools
-- [Targeting files](configuring/targeting-files.md) — getting your `files:` globs right
-- [Adapters overview](adapters/README.md) — wiring IronLint into your coding agent
+`ironlint init` still creates unversioned configs and installs the older
+write-hook integrations. It does not complete v1 setup. Create a v1 policy
+explicitly for now; [the plan](../plans/2026-09-05-ironlint-v1-implementation.md)
+tracks installer replacement and safe removal of owned hooks.

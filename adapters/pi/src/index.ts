@@ -1,6 +1,6 @@
 // pi adapter for IronLint. A pure translation layer between pi's extension
 // lifecycle and the `ironlint` CLI — it contains no rule logic. See
-// docs/superpowers/specs/2026-05-28-pi-adapter-design.md.
+// adapters/pi/README.md.
 
 import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
@@ -103,7 +103,7 @@ export function computeProposedContent(
 // shells out to `ironlint gate-bash` (the shared Rust matcher) — closing the
 // "shell redirections are too brittle to parse" gap that previously kept bash
 // ungated. See
-// docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+// docs/architecture.md.
 const GATED_TOOLS = new Set(["write", "edit", "bash"])
 
 // R3: the policy surface. The config file (`.ironlint.yml` / `.bully.yml`,

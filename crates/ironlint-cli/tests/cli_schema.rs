@@ -33,7 +33,7 @@ fn schema_prints_the_authoring_guide() {
 
 #[test]
 fn schema_teaches_lifecycle_placement() {
-    // W2-R3 (specs/2026-08-17-...-design.md): the placement heuristic
+    // W2-R3 (docs/architecture.md): the placement heuristic
     // section and its $IRONLINT_FILES rustfmt example are part of the
     // canonical guide.
     let s = schema_stdout();

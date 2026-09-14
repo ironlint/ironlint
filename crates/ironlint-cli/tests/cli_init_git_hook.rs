@@ -1,5 +1,5 @@
-//! E2E for the git pre-commit floor hook (specs/2026-08-17-git-floor-hook-and-self-defense-design.md,
-//! W1): `ironlint init` installs a marker-bracketed, chaining pre-commit
+//! E2E for the git pre-commit floor hook (see docs/architecture.md):
+//! `ironlint init` installs a marker-bracketed, chaining pre-commit
 //! hook that runs `ironlint check --diff` over the staged set; exit mapping
 //! per W1-R4; `init --uninstall` removes it.
 

@@ -1,75 +1,109 @@
-# Architecture diagram
+# Current architecture
 
-IronLint turns repo-local policy into an automatic gate for AI coding agents. The short version: adapters catch edits, the `ironlint` binary runs the matching checks against each edit, and the adapter turns the verdict back into "keep going" or "fix this first."
+IronLint evaluates developer-defined shell checks and returns structured results.
+The `version: 1` core and CLI are implemented. The external acceptance integration
+and completed-edit feedback adapter are still to build. Existing installers and
+adapters use the older write-hook protocol; their presence does not establish v1
+support. See the [remaining work](../plans/2026-09-05-ironlint-v1-implementation.md).
+
+## Implemented v1 flow
 
 ```mermaid
 flowchart LR
-    subgraph People["People and policy"]
-        Team["Team intent<br/>security, style, tests, architecture"]
-        Config[".ironlint.yml<br/>checks: files + run"]
-        Trust["Trust store<br/>~/.config/ironlint/trust.json"]
-        Resolved["Resolved config<br/>extends merged"]
-    end
-
-    subgraph Agents["AI coding tools"]
-        Claude["Claude Code"]
-        OpenCode["OpenCode"]
-        Codex["Codex"]
-        Pi["pi"]
-        Future["Other integrations<br/>call ironlint check"]
-    end
-
-    subgraph AdapterLayer["Adapter layer"]
-        Hooks["Edit hooks<br/>capture proposed content"]
-        ABI["Stable ABI<br/>$IRONLINT_FILE, $IRONLINT_FILES, $IRONLINT_ROOT, $IRONLINT_EVENT, $IRONLINT_TMPFILE, $IRONLINT_BIN,<br/>$IRONLINT_PROPOSED_MANIFEST, stdin"]
-    end
-
-    subgraph IronLint["IronLint"]
-        CLI["ironlint CLI<br/>arguments, I/O, exit codes"]
-        Core["ironlint-core<br/>load, match files, run checks"]
-        Run["Run each matching check<br/>sh -c run, read exit code"]
-        Verdict["Verdict<br/>pass, block, or internal_error"]
-        Telemetry["Telemetry<br/>append-only check log"]
-    end
-
-    subgraph Outcome["Outcome"]
-        Allow["Allow edit<br/>agent continues"]
-        Block["Block edit<br/>adapter rejects it so the agent retries"]
-        Audit["Operate and improve<br/>review noisy, dead, or valuable checks"]
-    end
-
-    Team --> Config
-    Config --> Resolved
-    Resolved --> CLI
-    Trust --> CLI
-
-    Claude --> Hooks
-    OpenCode --> Hooks
-    Codex --> Hooks
-    Pi --> Hooks
-    Future --> Hooks
-    Hooks --> ABI
-    ABI --> CLI
-    CLI --> Core
-
-    Core --> Run
-    Run --> Verdict
-    Verdict --> Telemetry
-    Verdict --> Allow
-    Verdict --> Block
-    Telemetry --> Audit
-    Audit --> Config
+    Input["CLI: policy, root, event, changed paths"] --> CLI["Validate input and local consent"]
+    CLI --> Parse["Parse version: 1 policy"]
+    Parse --> Select["Select checks"]
+    Select --> Run["Run serially: sh -c in root"]
+    Run --> Verdict["Schema 7 result and exit code"]
+    Verdict --> Caller["Caller consumes result"]
 ```
 
-## What this shows
+| Responsibility | Source entry point |
+| --- | --- |
+| CLI arguments and usage-error output | `crates/ironlint-cli/src/cli.rs`, `crates/ironlint-cli/src/main.rs` |
+| Config discovery and format dispatch | `crates/ironlint-cli/src/commands/config.rs` |
+| Root/path validation, consent, CLI result | `crates/ironlint-cli/src/commands/check.rs` |
+| V1 parsing and check selection | `crates/ironlint-core/src/config/v1.rs` |
+| Serial evaluation and total deadline | `crates/ironlint-core/src/runner/v1.rs` |
+| Process lifecycle, environment, output capture | `crates/ironlint-core/src/engine/execution.rs` |
+| Schema-7 types and aggregate status | `crates/ironlint-core/src/verdict.rs` |
+| Consent store and policy hashing | `crates/ironlint-core/src/trust/` |
+| Installation ownership and artifact inspection | `crates/ironlint-core/src/adapter/`, `crates/ironlint-cli/src/commands/init/` |
 
-- **Policy lives with the code.** The `.ironlint.yml` travels with the repo, so every agent runs the same checks.
-- **Adapters are thin.** Claude Code, OpenCode, Codex, pi, and future adapters capture host edit events and consume IronLint's verdict over a stable ABI. Codex is the one adapter that doesn't block via exit code: its `PreToolUse` hook gates `apply_patch` calls and turns a block into a `permissionDecision:"deny"` JSON object on stdout, writing its hook registration to `~/.codex/hooks.json` (or the project-scoped `.codex/hooks.json`). No policy logic lives in the adapter.
-- **One execution model.** IronLint matches the edited file to checks and runs each check's `run` command, reading only the exit code. There are no engines and no severities — a check blocks on any nonzero exit (1–125) and owns its own message.
-- **Trust comes before power.** The CLI verifies trust before it loads the runner. A check runs shell only when the config, its `extends:` closure, and its `.ironlint/scripts/` files match a blessing in the out-of-repo trust store.
-- **The verdict is machine-readable.** `pass`, `block`, and `internal_error` map to stable exit codes that agents and CI act on. A per-edit check blocks immediately, so the agent retries before the change lands.
-- **The system improves over time.** Telemetry records what ran, what blocked, and how long it took, so you can see which checks are noisy, valuable, or dead.
+`accept` selects every configured check. `change` selects checks opted into early
+feedback, filtered by changed paths when known. Each selected check executes once,
+in check-ID order. Bare globs such as `*.rs` match at any depth. A known empty path
+set skips file-filtered checks; unknown paths run all change checks. Unconditional
+change checks run in either case.
 
-## Mental model
+Paths are relative to the supplied root. CLI validation allows deleted paths,
+rejects escapes (including symlinks resolving outside the root), and preserves
+in-root symlink names for trigger matching. This validates trigger inputs; it
+does not sandbox the command.
 
-IronLint is not another linter. It is the portable substrate beneath your linters: it normalizes every harness's edit hook into one ABI, runs the same check commands everywhere, and turns their exit codes into a deterministic gate an agent must clear before its edit lands.
+Commands run with stdin closed against the actual tree. The environment retains
+`PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`, and `LC_*`, then supplies `IRONLINT_ROOT`,
+`IRONLINT_EVENT`, and `IRONLINT_BIN`. Other inherited variables, including legacy
+`IRONLINT_*` values, are removed. Defaults are 30 seconds per check and 300 seconds
+per invocation. Each output stream retains at most 64 KiB and marks truncation.
+Process cleanup and pipe draining are bounded; Unix uses process groups.
+
+Command exits 1–125 are violations. Exits 126/127, high exits, signals, and timeouts
+are execution errors. Evaluation continues after a violation, stops after an
+execution error, and lists selected checks left unrun. Errors take precedence
+over violations. See [JSON and exits](reference/verdict-json.md).
+
+The CLI enforces execution consent before running commands. The core evaluator
+does not enforce trust or perform acceptance. Hashing covers policy bytes and
+managed `.ironlint/scripts/` content; it is not proof that arbitrary transitive
+dependencies are safe. Read-only inspection does not require approval.
+
+## Integration boundary still to build
+
+```mermaid
+flowchart LR
+    Edit["Completed edit"] -. planned .-> Feedback["Adapter: change feedback, retain edit"]
+    Candidate["Exact candidate revision"] -. planned .-> Trusted["Approved evaluator and policy"]
+    Trusted -. planned .-> Owner["External owner: accept that revision or deny"]
+```
+
+The acceptance owner must protect the operation, fix policy/evaluator provenance,
+bind results to the exact candidate, and isolate publication credentials from
+candidate execution. A local pass, a trust hash, or a successful edit hook cannot
+provide that authority. The [v1 contract](../specs/2026-09-05-ironlint-v1-design.md)
+defines the required proof. No live v1 integration is currently claimed.
+
+## Existing installation and code awaiting removal
+
+The workspace currently has three crates: `ironlint-core`, `ironlint-cli`, and the
+dependency-free `ironlint-bash-gate`. Unversioned configs still dispatch through
+the older `write`/`pre-commit` runner, schema-6 verdicts, proposed-content ABI,
+`extends`, `steps`, and suppression support. This is existing code awaiting the
+breaking-release cleanup, not a compatibility requirement for v1.
+
+`init` still scaffolds that format, installs write-hook adapters and a Git
+pre-commit floor. `gate-bash` is config-less, separate from checks, and returns
+0 to allow or 2 to block. It covers policy, adapter-installation and floor-hook
+surfaces plus recognized Git bypass commands; shell indirection remains a gap.
+It is a local guardrail, not an external authority boundary.
+
+Remove IronLint-owned registrations before deleting commands they invoke. Keep
+unrelated settings, chained hooks, and user edits. Current ownership/uninstall
+machinery is the starting point; no config converter or rollback system is planned.
+
+`validate`, `explain`, `show-resolved-config`, and `doctor` understand v1 configs.
+Telemetry and `watch` still consume the existing write/pre-commit log format;
+the v1 evaluator does not append those records. Their final disposition belongs
+to the cleanup packet, with no telemetry/UI redesign in scope.
+
+## Adapter evidence
+
+The four existing adapters have contract suites in `scripts/ci-adapters.sh`.
+Codex has captured `apply_patch` add/update payloads. Claude Code, pi, and
+OpenCode declare capture-pending directories and use synthetic coverage.
+These fixtures describe the existing hook protocol, not completed-edit v1 support.
+
+Keep each `adapters/<harness>/fixtures/README.md` declaration and capture procedure
+while its suite remains active. Missing provenance or removal of a pending
+declaration can fail the fixture meta-tests. V1 requires one live-verified
+feedback adapter; additional harness captures are not release requirements.

@@ -1,137 +1,32 @@
-# The trust store
+# Execution consent
 
-A `.ironlint.yml` runs arbitrary shell through its checks' `run:` commands. So IronLint refuses to run a config you haven't vouched for: you review the config and its check scripts, bless them once, and IronLint verifies that blessing before every `check`. This is the primary defense against a malicious or tampered config.
+Policy commands run with the invoking account's filesystem permissions. Review
+the policy and managed scripts, then grant consent explicitly:
 
-The blessing lives **outside the repo**, so a config can't vouch for itself — a pulled, generated, or freshly-edited config is untrusted until *you*, on *this* machine, bless it.
-
-## Blessing a config
-
-After writing or editing your checks, review them, then bless:
-
-```bash
-ironlint trust
+```sh
+ironlint validate --config /work/policy.yml
+ironlint trust --config /work/policy.yml
+ironlint check --config /work/policy.yml --root /work/candidate --event accept
 ```
 
-This computes a SHA-256 over the config and its check scripts and records it in the trust store at `~/.config/ironlint/trust.json` (or `$XDG_CONFIG_HOME/ironlint/trust.json`), keyed by the config's absolute path:
+Consent is stored outside the repository at the XDG config location
+(`~/.config/ironlint/trust.json` by default), keyed by canonical policy path.
+Hashing covers config bytes and managed `.ironlint/scripts/` content. The
+currently retained unversioned path also resolves inheritance for hashing.
+Changed approved inputs need renewed consent; arbitrary transitive dependencies
+are not all hashed.
 
-```json
-{
-  "version": 2,
-  "entries": {
-    "/home/you/project/.ironlint.yml": {
-      "hash": "sha256:8798ad5a0ab624c9a5d56b87372cdaf1fdd3ccc5339fe2573b82b26be28b9f36",
-      "blessed_at": "2026-06-24T18:03:11+00:00"
-    }
-  }
-}
-```
+The CLI `check` enforces consent. Read-only inspection can examine unapproved
+policies. The core evaluator remains independent of the store. Untrusted input
+returns exit 4; unverifiable inputs can return exit 1. Neither authorizes acceptance.
 
-The store may also carry a `worktree_entries` map that blesses the same policy for every linked Git worktree sharing the same common Git directory; see [Linked-worktree inheritance](#linked-worktree-inheritance) below.
+An external owner must select approved policy/evaluator inputs and isolate
+publication credentials from candidate execution. Candidate flags/environment
+cannot grant trusted CI status. Consent is not a sandbox or authority boundary
+against another process sharing the account.
 
-To bless a config other than `.ironlint.yml`:
+## Existing Bash guardrail
 
-```bash
-ironlint trust --config shared/base.yml
-```
-
-## The agent can't bless its own config
-
-The Bash tool is gated too: an agent running `ironlint trust` (or writing to
-`.ironlint.yml` / a gate script through Bash redirections, `tee`, `sed -i`,
-`cp`/`mv` onto the policy surface) is denied. The Write/Edit path to those
-files stays open — it is already gated — so the change closes the *ungated*
-Bash escape without removing the legitimate edit path. The deny decision is
-shared across every adapter via `ironlint gate-bash`, and it fires even in a
-project with no `.ironlint.yml` (exactly when the agent is most motivated to
-self-trust). It cannot reliably classify shell commands that construct
-`ironlint trust` through variable substitution, such as `iron$(echo lint) trust`;
-treat the Bash gate as protection for direct shell forms, not a shell sandbox.
-
-## The adapter installation surface
-
-The same Bash gate also defends the adapter installation artifacts —
-`~/.claude/settings.json`, `.claude/settings.local.json`, `.codex/hooks.json`,
-`.pi/extensions/`, `.opencode/plugins/` — the files `init` writes when it
-installs a harness's rails. A Bash write, move, delete, or `chmod` against any
-of those is denied the same way a policy-surface write is. Project-scoped
-settings ARE repo paths, so a normal check scoping them
-(`.claude/settings*.json` and friends) covers the agent's file tools editing
-them too; the authoring guide suggests this.
-
-This closes only the Bash path. Home-scoped harness settings
-(`~/.claude/settings.json`) sit outside every repo glob's reach, so the
-agent's *file tools* can still edit them ungated — that is the gate's honest
-residual, not a sandbox guarantee. The `--no-verify`/`core.hooksPath`
-git-bypass forms and the variable-substitution indirection
-(`iron$(echo lint)`-style) share the same known gap: the gate is protection
-for direct shell forms only, and a human typing at a terminal is untouched.
-
-## How verification works
-
-Before loading the engine or running any check, `ironlint check` recomputes the hash and compares it to the blessed entry for that config's path. On a missing or mismatched entry it stops with a trust error (exit `4`) and a hint to re-bless — no check runs:
-
-```
-config/scripts not trusted — review and run `ironlint trust`
-```
-
-Only `check` enforces trust. The read-only commands — `validate`, `explain`, `show-resolved-config`, `doctor` — never do, so you can inspect an untrusted config without blessing it first.
-
-Any change to a covered file invalidates the hash. That's the point: a config, or a check script, that's been edited — by you, a teammate, or anything else — since you last reviewed it won't run until you look at the change and re-bless.
-
-### Linked-worktree inheritance
-
-One `ironlint trust` in any worktree of a local Git repo covers the same unchanged policy in every linked worktree that shares the same common Git directory. Creating a worktree, switching branches, or editing ordinary source code no longer requires another `ironlint trust`.
-
-This is convenience around an existing approval, not automatic approval: any change to a covered config or covered script still revokes trust; `check` never writes the store; and `ironlint trust` remains the only operation that grants approval. The adapter Bash gates still block an agent from invoking `ironlint trust` through Bash.
-
-The boundary is strict: only fully in-worktree policy is eligible. The root config, every config it `extends:`, and every `.ironlint/scripts/` file must all sit under the same worktree root. An external `extends:` target or a config symlinked outside the root disables inheritance for that policy; exact-path direct trust still applies.
-
-A separate clone, copied directory, or unrelated repository — any worktree with a different common Git directory — does not inherit. The common Git directory stays part of the trust identity.
-
-No `git` binary is invoked at the trust boundary. Discovery uses filesystem metadata only, so nonstandard or unreadable Git metadata simply disables inheritance; direct trust still works.
-
-Upgrading: a still-present trusted v1 entry is honored via a read-only legacy fallback, so a pre-existing blessing keeps working without an immediate re-trust. Running `ironlint trust` again in any eligible worktree writes the durable v2 family entry.
-
-The `ironlint trust` summary now prints a `scope:` line — `scope: linked worktrees` when the policy qualifies for inheritance, or `scope: this config path` otherwise — so the broader approval is visible.
-
-## Re-blessing after a change
-
-Re-run `ironlint trust` whenever you change anything it covers (see [What trust covers](#what-trust-covers)):
-
-- the config file, or any file it `extends:`
-- any script under a covered `.ironlint/scripts/`
-
-The workflow is: edit checks → review → `ironlint trust` → commit. If you pull a change to `.ironlint.yml` (or a base it extends) from a teammate, review their diff before blessing it on your machine.
-
-The trust store lives outside the repo, so it isn't committed and isn't shared — every machine blesses for itself. Moving the project to a new path, or upgrading IronLint across a version that changes the hash algorithm, also needs a one-time re-bless; the mismatch error from `check` will say so.
-
-## What trust covers
-
-The blessed hash folds, in a fixed, deterministic order:
-
-1. **Every config file in the `extends:` closure** — the config you check, plus every file it transitively extends.
-2. **Every file under each of their `.ironlint/scripts/` directories.**
-
-So with `extends:` you bless the **root** config you run `check` against, and a single `ironlint trust` covers the whole chain. Editing a parent — or a parent's check script — invalidates the root's hash and forces a re-review. (You only bless a parent separately if you also `check` it directly as a root of its own.)
-
-### What it doesn't cover
-
-- **Check scripts outside `.ironlint/scripts/`.** A check whose `run:` shells out to a file elsewhere in the repo — `run: "bash scripts/lint.sh"` or `run: "python tools/scan.py"` — is covered only for the `run:` *string* (which lives in the config). The contents of `scripts/lint.sh` are **not** hashed, so editing that file can neuter the check without invalidating trust. Keep check logic under `.ironlint/scripts/` (e.g. `run: ".ironlint/scripts/lint.sh"`) to bring it inside the boundary. This is the same threat class as a tampered config, reached through a file the hash doesn't reach.
-- **Interpreters and tools on `$PATH`.** Trust vouches for your check scripts, not for the `python`, `grep`, or `node` they invoke.
-- **Writes during the run.** The hash is computed when `check` starts; a write between that point and a check actually executing isn't caught. This TOCTOU window is a known limitation of the direnv-style model — there's no file locking.
-
-## Trust is not a sandbox
-
-The trust store answers "have I reviewed what runs?", not "what can it do once it runs?". IronLint does **not** sandbox check commands — the per-check [timeout](../operating/running-checks.md) is the only execution rail, and a blessed check runs with your full user privileges.
-
-If you need real isolation from a config you don't fully trust, run IronLint inside an OS-level sandbox — a container, a fresh user, or `bwrap` — in addition to blessing it.
-
-## Checks run with a scrubbed environment
-
-A blessed check still doesn't see your whole shell environment. Before spawning a check, IronLint clears the child process's environment and rebuilds it from an explicit allowlist: `$PATH`, `$HOME`, locale (`$LANG` and any `$LC_*`), `$TZ`, `$TMPDIR`, plus the [`$IRONLINT_*` ABI vars](../writing-checks/README.md#the-abi-what-every-check-receives). Everything else in the parent process's environment — `$ANTHROPIC_API_KEY`, `$GITHUB_TOKEN`, `$AWS_*`, any other secret or token the agent process holds — is **not** passed through, even to a fully blessed check. This bounds what a compromised or careless check script can read, on top of (not instead of) trust review.
-
-## See also
-
-- [Sharing config with `extends:`](../configuring/inheritance.md) — blessing a config that inherits
-- [Running checks](../operating/running-checks.md) — where trust sits in the `check` flow
-- [Getting started](../getting-started.md) — trust in the first-run workflow
+The current gate-bash recognizes trust commands and protected-surface mutations
+through integrated shell tools. Its coverage has indirection limits. It is slated
+for removal with owned hook registrations and does not establish external acceptance.

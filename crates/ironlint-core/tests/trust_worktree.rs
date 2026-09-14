@@ -1,6 +1,6 @@
 //! Linked-worktree trust inheritance, exercised through REAL `git worktree add`
 //! metadata — not a hand-crafted directory fixture. These are the acceptance
-//! tests for docs/superpowers/specs/2026-07-11-git-worktree-trust-inheritance-design.md.
+//! tests for docs/security/trust.md.
 
 use ironlint_core::trust::{bless_in, check_trust_in, TrustOutcome};
 use std::path::PathBuf;

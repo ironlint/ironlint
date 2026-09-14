@@ -1,5 +1,9 @@
 # Diagnostics
 
+`doctor` parses v1 policies, but adapter rows inspect the currently installed
+write-hook artifacts. Passing rows do not prove completed-edit feedback or an
+external acceptance integration. See [adapter status](../adapters/README.md).
+
 When checks misbehave — hooks not firing, an "untrusted config" error, or a check that won't run — start with `ironlint doctor`. It is a read-only command that checks the local install, config, shell, and adapter wiring, then reports how to fix each problem:
 
 ```bash
@@ -18,7 +22,7 @@ For a machine-readable report, add `--format json`. The rest of this page is the
 |---|---|
 | `binary` | The running `ironlint` resolves to a path; reports the version. Always `pass`. |
 | `config` | `<dir>/.ironlint.yml` exists. `fail` if missing. |
-| `parses` | The config (and every transitive `extends:` ancestor) parses. `fail` on malformed YAML or a rejected legacy config. |
+| `parses` | The v1 config parses, or the currently supported unversioned config and its inheritance parse. `fail` on malformed or unsupported input. |
 | `check_scripts` | For each check whose `run` is a single-token path beginning with `.ironlint/`, that the path exists and is executable. Inline commands (anything with a space) are skipped. `fail` lists the offending check(s). |
 | `shell` | A POSIX `sh` is available on `PATH`. `fail` if it is missing; IronLint needs it to run every `run:` command. On Windows, use Git Bash or WSL. |
 | `trust` | The config and every file under `.ironlint/scripts/` is blessed in the out-of-repo trust store. `warn` (not `fail`) when unblessed — `doctor` is read-only, and trust is enforced only at the `check` layer. Remediation: `ironlint trust`. |
@@ -84,7 +88,7 @@ These are *distinct* from `ironlint check`'s `0`/`1`/`2`/`3` contract. `doctor` 
 
 ## Stability
 
-- The set of `name` values is **additive-only** — new checks land at the end of the list.
-- The `status` values (`pass` / `warn` / `fail`) are frozen.
+- Current row statuses are `pass`, `warn`, and `fail`. Adapter rows may be removed
+  or replaced as part of the breaking v1 release; backward compatibility is not promised.
 - `detail` and `remediation` strings are human-readable and may change between releases — do not parse them.
-- The exit-code rule (`0` for pass-or-warn, `1` for any fail) is frozen.
+- The current exit-code rule is `0` for pass-or-warn and `1` for any fail.
