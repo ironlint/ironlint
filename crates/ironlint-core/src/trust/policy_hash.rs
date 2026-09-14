@@ -153,8 +153,7 @@ pub(super) fn closure_script_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
 pub fn compute_hash(config_path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
 
-    let config_paths = crate::config::extends::resolve_paths(config_path)
-        .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
+    let config_paths = config_paths(config_path)?;
 
     // Fold each config file, keyed by its canonical path.
     for path in &config_paths {
@@ -203,8 +202,7 @@ pub(super) fn compute_worktree_hash(
     config_path: &Path,
     scope: &WorktreeScope,
 ) -> Result<Option<String>> {
-    let config_paths = crate::config::extends::resolve_paths(config_path)
-        .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
+    let config_paths = config_paths(config_path)?;
     if !all_under_root(&config_paths, &scope.worktree_root) {
         return Ok(None);
     }
@@ -236,6 +234,16 @@ pub(super) fn compute_worktree_hash(
         }
     }
     Ok(Some(sha256_digest_hex(&hasher.finalize())))
+}
+
+pub(super) fn config_paths(config_path: &Path) -> Result<Vec<PathBuf>> {
+    if crate::config::v1::parse_v1_file(config_path).is_ok() {
+        return Ok(vec![config_path.canonicalize().with_context(|| {
+            format!("canonicalizing {}", config_path.display())
+        })?]);
+    }
+    crate::config::extends::resolve_paths(config_path)
+        .with_context(|| format!("resolving extends closure for {}", config_path.display()))
 }
 
 /// True iff every path in `paths` is under `root` (after canonicalization).

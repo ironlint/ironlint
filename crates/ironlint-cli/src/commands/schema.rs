@@ -1,7 +1,8 @@
 //! `ironlint schema` — print the canonical gate-authoring guide.
 //!
 //! Embeds `adapters/shared/ironlint-config/SKILL.md` and prints its body (YAML
-//! frontmatter stripped) to stdout. Read-only; never loads or trusts a config.
+//! frontmatter stripped) to stdout. The guide covers v1 and retained legacy
+//! authoring. Read-only; never loads or trusts a config.
 
 use anyhow::Result;
 
@@ -52,6 +53,8 @@ mod tests {
         assert!(!strip_frontmatter(GUIDE).starts_with("---"));
         assert!(strip_frontmatter(GUIDE).contains("$IRONLINT_FILE"));
         assert!(strip_frontmatter(GUIDE).contains("$IRONLINT_TMPFILE"));
+        assert!(strip_frontmatter(GUIDE).contains("## v1 policy format"));
+        assert!(strip_frontmatter(GUIDE).contains("with stdin closed"));
         // W2-R3: the embedded guide must carry the lifecycle-placement
         // heuristic and its re-scoped rustfmt example.
         assert!(strip_frontmatter(GUIDE).contains("Lifecycle placement"));

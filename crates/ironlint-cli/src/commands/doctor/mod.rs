@@ -32,7 +32,10 @@ mod adapters;
 mod config;
 
 use adapters::adapter_section;
-use config::{check_config_parses, check_config_present, check_script_paths};
+use config::{
+    check_config_parses_snapshot, check_config_present_snapshot, check_script_paths_snapshot,
+    load_config_snapshot,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckResult {
@@ -66,11 +69,12 @@ pub fn run(dir: &std::path::Path, format: OutputFormat) -> Result<i32> {
         dir: dir.to_path_buf(),
         config_path: dir.join(".ironlint.yml"),
     };
+    let snapshot = load_config_snapshot(&ctx.config_path);
     let mut checks: Vec<CheckResult> = vec![
         check_binary(),
-        check_config_present(&ctx),
-        check_config_parses(&ctx),
-        check_script_paths(&ctx),
+        check_config_present_snapshot(&ctx, &snapshot),
+        check_config_parses_snapshot(&ctx, &snapshot),
+        check_script_paths_snapshot(&ctx, &snapshot),
         shell_row(),
         trust_row(&ctx),
     ];

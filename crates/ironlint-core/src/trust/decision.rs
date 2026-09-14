@@ -159,8 +159,10 @@ pub fn ensure_trusted_in(config_path: &Path, store_path: &Path) -> Result<()> {
 /// existing store is tolerated (see [`read_store_for_bless`]) so blessing
 /// doubles as the recovery path.
 pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> {
-    crate::config::parse_file_with_extends(config_path)
-        .context("refusing to trust a config that does not parse")?;
+    if crate::config::v1::parse_v1_file(config_path).is_err() {
+        crate::config::parse_file_with_extends(config_path)
+            .context("refusing to trust a config that does not parse")?;
+    }
     let key = canonical_key(config_path)?;
     let hash = compute_hash(config_path)?;
 

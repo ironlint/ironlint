@@ -63,7 +63,7 @@ pub fn parse_str(input: &str) -> Result<Config> {
 /// (`grep -q X` + `exit 2` → `grep -q X exit 2`) — stays syntactically valid
 /// shell, so it can't be rejected statically without a shell parser; the block
 /// scalar (`run: |`) is the documented fix for both.
-fn run_has_executable_content(run: &str) -> bool {
+pub(super) fn run_has_executable_content(run: &str) -> bool {
     run.lines().any(|line| {
         let trimmed = line.trim();
         !trimmed.is_empty() && !trimmed.starts_with('#')

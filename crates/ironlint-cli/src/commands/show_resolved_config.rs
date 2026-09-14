@@ -21,27 +21,46 @@ struct ResolvedCheck {
 }
 
 pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
-    let config = match crate::commands::config::resolve_config(config) {
+    let config_path = match crate::commands::config::resolve_config(config) {
         Ok(p) => p,
         Err(msg) => {
             eprintln!("error: {msg}");
             return Ok(1);
         }
     };
-    let (cfg, origins) = match ironlint_core::config::extends::resolve_with_origin(&config) {
-        Ok(v) => v,
+    let rows = match crate::commands::config::load_read_only_with_path(&config_path) {
+        Ok((_config_path, crate::commands::config::ReadOnlyConfig::Legacy { config, origins })) => {
+            build_rows(&config, &origins)
+        }
+        Ok((config_path, crate::commands::config::ReadOnlyConfig::V1(v1))) => {
+            build_v1_rows(&v1, &config_path)
+        }
         Err(e) => {
             eprintln!("error: {:#}", e);
             return Ok(1);
         }
     };
-    let rows = build_rows(&cfg, &origins);
     match format {
         ShowFormat::Tsv => print_tsv(&rows),
         ShowFormat::Yaml => print_yaml(&rows)?,
         ShowFormat::Json => print_json(&rows)?,
     }
     Ok(0)
+}
+
+fn build_v1_rows(
+    cfg: &crate::commands::config::V1InspectionConfig,
+    origin: &Path,
+) -> Vec<ResolvedCheck> {
+    cfg.checks
+        .iter()
+        .map(|(id, check)| ResolvedCheck {
+            check: id.clone(),
+            origin: origin.display().to_string(),
+            files: check.files.clone().unwrap_or_default(),
+            run: check.run.clone(),
+        })
+        .collect()
 }
 
 fn build_rows(cfg: &Config, origins: &BTreeMap<String, PathBuf>) -> Vec<ResolvedCheck> {

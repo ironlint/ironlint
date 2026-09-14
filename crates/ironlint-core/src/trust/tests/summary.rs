@@ -67,6 +67,27 @@ fn blessed_summary_is_empty_with_no_scripts() {
     assert_eq!(summary.checks, 1, "the one inline check still counts");
 }
 
+#[cfg(unix)]
+#[test]
+fn v1_blessed_summary_uses_the_canonical_policy_directory() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let owner = dir.path().join("owner");
+    let alias = dir.path().join("alias");
+    let policy = owner.join("policy.yml");
+    write(&policy, "version: 1\nchecks:\n  all: {run: 'true'}\n");
+    write(&owner.join(".ironlint/scripts/required.sh"), "true\n");
+    fs::create_dir_all(&alias).unwrap();
+    let alias_policy = alias.join("policy.yml");
+    symlink(&policy, &alias_policy).unwrap();
+
+    assert_eq!(
+        blessed_summary(&alias_policy).unwrap().scripts,
+        vec!["required.sh"],
+    );
+}
+
 #[test]
 fn blessed_summary_scope_is_linked_worktrees_for_git_repo() {
     let root = tempfile::tempdir().unwrap();

@@ -1,9 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use super::policy_hash::{
     classify_entry, closure_script_dirs, collect_gate_files, compute_hash, compute_worktree_hash,
-    EntryKind,
+    config_paths, EntryKind,
 };
 use super::worktree::WorktreeScope;
 
@@ -42,9 +42,8 @@ pub struct BlessedSummary {
 /// misrepresent what was actually blessed.
 pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     let config_hash = compute_hash(config_path)?;
-
-    let config_paths = crate::config::extends::resolve_paths(config_path)
-        .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
+    let v1 = crate::config::v1::parse_v1_file(config_path).ok();
+    let config_paths = config_paths(config_path)?;
     let script_dirs = closure_script_dirs(&config_paths);
 
     let mut scripts: Vec<String> = Vec::new();
@@ -64,11 +63,18 @@ pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     scripts.sort();
     scripts.dedup();
 
-    let merged = crate::config::extends::resolve(config_path)?;
-    let checks = merged.checks.len();
+    let checks = match &v1 {
+        Some(config) => config.checks.len(),
+        None => crate::config::extends::resolve(config_path)?.checks.len(),
+    };
 
-    let scope = match WorktreeScope::discover(config_path) {
-        Some(s) if policy_is_eligible(config_path, &s).unwrap_or(false) => {
+    let scope_path = if v1.is_some() {
+        &config_paths[0]
+    } else {
+        config_path
+    };
+    let scope = match WorktreeScope::discover(scope_path) {
+        Some(s) if policy_is_eligible(scope_path, &s).unwrap_or(false) => {
             "linked worktrees".to_string()
         }
         _ => "this config path".to_string(),

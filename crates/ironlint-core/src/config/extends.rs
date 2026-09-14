@@ -96,6 +96,21 @@ pub fn resolve_with_origin(root: &Path) -> Result<(Config, BTreeMap<String, Path
     Ok((cfg, origins))
 }
 
+/// Resolve `extends:` from already-read bytes for a canonical root path.
+///
+/// Callers that need a stable read snapshot must canonicalize the root before
+/// reading it, then pass those exact bytes here. Extended parents are still
+/// resolved from disk.
+pub fn resolve_with_origin_from_str(
+    canonical_root: &Path,
+    content: &str,
+) -> Result<(Config, BTreeMap<String, PathBuf>)> {
+    let mut seen = HashSet::new();
+    let mut origins: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let cfg = resolve_content_with_origin(canonical_root, content, &mut seen, &mut origins)?;
+    Ok((cfg, origins))
+}
+
 fn resolve_inner_with_origin(
     path: &Path,
     seen: &mut HashSet<PathBuf>,
@@ -104,17 +119,25 @@ fn resolve_inner_with_origin(
     let canonical = path
         .canonicalize()
         .with_context(|| format!("resolving {}", path.display()))?;
-    if !seen.insert(canonical.clone()) {
-        return Err(anyhow!("extends cycle detected at {}", canonical.display()));
-    }
     let content = std::fs::read_to_string(&canonical)
         .with_context(|| format!("reading {}", canonical.display()))?;
-    let mut cfg = parse_str(&content)?;
+    resolve_content_with_origin(&canonical, &content, seen, origins)
+}
 
+fn resolve_content_with_origin(
+    canonical: &Path,
+    content: &str,
+    seen: &mut HashSet<PathBuf>,
+    origins: &mut BTreeMap<String, PathBuf>,
+) -> Result<Config> {
+    if !seen.insert(canonical.to_path_buf()) {
+        return Err(anyhow!("extends cycle detected at {}", canonical.display()));
+    }
+    let mut cfg = parse_str(content)?;
     for id in cfg.checks.keys() {
         origins
             .entry(id.clone())
-            .or_insert_with(|| canonical.clone());
+            .or_insert_with(|| canonical.to_path_buf());
     }
 
     let parent_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
@@ -124,7 +147,7 @@ fn resolve_inner_with_origin(
         let inherited = resolve_inner_with_origin(&abs, seen, origins)?;
         merge_inherited_with_origin(&mut cfg, inherited, origins, &abs);
     }
-    seen.remove(&canonical);
+    seen.remove(canonical);
     Ok(cfg)
 }
 

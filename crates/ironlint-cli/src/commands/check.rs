@@ -6,7 +6,9 @@ use ironlint_core::runner::{
 };
 use ironlint_core::trust::TrustOutcome;
 use ironlint_core::verdict::{Status, Verdict};
+use ironlint_core::verdict::{V1Status, V1Verdict};
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -61,7 +63,7 @@ const NO_SHELL_MSG: &str = "no POSIX shell (`sh`) found on PATH. IronLint runs c
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::fn_params_excessive_bools)]
 pub fn run(
-    file: Option<PathBuf>,
+    file: Vec<PathBuf>,
     diff: Option<PathBuf>,
     content: Option<String>,
     format: OutputFormat,
@@ -72,12 +74,46 @@ pub fn run(
     allow_external_paths: bool,
     force: bool,
     require_match: bool,
+    root: Option<&Path>,
 ) -> Result<i32> {
+    let v1_event = event
+        .as_deref()
+        .filter(|event| matches!(*event, "change" | "accept"));
     let config = match crate::commands::config::resolve_config(config) {
         Ok(p) => p,
-        Err(msg) => return Ok(emit_error(format, &msg, 1)),
+        Err(msg) => {
+            return Ok(match v1_event {
+                Some(event) => emit_v1_error(format, event, &msg, 1),
+                None => emit_error(format, &msg, 1),
+            });
+        }
     };
     let config = config.as_path();
+    if crate::commands::config::is_versioned_config(config) {
+        return run_v1(
+            config,
+            root.unwrap_or_else(|| Path::new(".")),
+            file,
+            diff.as_ref(),
+            content.as_ref(),
+            format,
+            &checks,
+            event.as_ref(),
+            explain,
+            force,
+            require_match,
+        );
+    }
+    if root.is_some() {
+        return Ok(emit_error(format, "legacy checks do not accept --root", 1));
+    }
+    if matches!(event.as_deref(), Some("change" | "accept")) {
+        return Ok(emit_error(
+            format,
+            "legacy checks accept only `write` or `pre-commit` events",
+            1,
+        ));
+    }
     if force && checks.is_empty() {
         return Ok(emit_error(
             format,
@@ -132,9 +168,15 @@ pub fn run(
     let check_filter: HashSet<String> = checks.into_iter().collect();
     engine.set_check_filter(check_filter.clone());
 
-    match (file, diff) {
-        (Some(f), None) => run_file(&engine, f, content, format, explain, require_match),
-        (None, Some(d)) => run_diff(
+    if let Some(d) = diff {
+        if !file.is_empty() {
+            return Ok(emit_error(
+                format,
+                "provide exactly one of --file or --diff",
+                1,
+            ));
+        }
+        return run_diff(
             &mut engine,
             config,
             &d,
@@ -148,13 +190,11 @@ pub fn run(
             format,
             explain,
             require_match,
-        ),
-        (Some(_), Some(_)) => Ok(emit_error(
-            format,
-            "provide exactly one of --file or --diff",
-            1,
-        )),
-        (None, None) => {
+        );
+    }
+    match file.as_slice() {
+        [f] => run_file(&engine, f.clone(), content, format, explain, require_match),
+        [] => {
             // Bare `check` = repo-wide sweep. The sweep derives each check's
             // lifecycle from its `on:` list, so a caller-chosen event is a
             // contradiction, and `--force` (scope bypass for one file) has
@@ -179,6 +219,215 @@ pub fn run(
                 allow_external_paths,
             )
         }
+        _ => Ok(emit_error(
+            format,
+            "legacy checks accept exactly one --file",
+            1,
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_v1(
+    config: &Path,
+    root: &Path,
+    files: Vec<PathBuf>,
+    diff: Option<&PathBuf>,
+    content: Option<&String>,
+    format: OutputFormat,
+    checks: &[String],
+    event: Option<&String>,
+    explain: bool,
+    force: bool,
+    require_match: bool,
+) -> Result<i32> {
+    let event_name = event.map(String::as_str).unwrap_or("accept");
+    if !matches!(event_name, "change" | "accept") {
+        return Ok(emit_v1_error(
+            format,
+            event_name,
+            "v1 accepts only `change` or `accept` events",
+            1,
+        ));
+    }
+    let invalid = diff.is_some()
+        || content.is_some()
+        || !checks.is_empty()
+        || explain
+        || force
+        || require_match
+        || (event_name == "accept" && !files.is_empty())
+        || (event.is_none() && !files.is_empty());
+    if invalid {
+        return Ok(emit_v1_error(
+            format,
+            event_name,
+            "v1 accepts only --event change with repeatable --file; acceptance has no file filter",
+            1,
+        ));
+    }
+    let root = match normalize_v1_root(root) {
+        Ok(root) => root,
+        Err(reason) => return Ok(emit_v1_error(format, event_name, &reason, 1)),
+    };
+    let changed = if event_name == "change" && !files.is_empty() {
+        let mut paths = Vec::with_capacity(files.len());
+        for file in files {
+            let absolute = match normalize_v1_path(&root, &file) {
+                Ok(path) => path,
+                Err(reason) => return Ok(emit_v1_error(format, event_name, &reason, 1)),
+            };
+            paths.push(absolute.strip_prefix(&root).unwrap().to_path_buf());
+        }
+        Some(paths)
+    } else {
+        None
+    };
+    match ironlint_core::trust::check_trust(config) {
+        Ok(TrustOutcome::Trusted) => {}
+        Ok(TrustOutcome::Untrusted(e)) => {
+            return Ok(emit_v1_error(format, event_name, &format!("{e:#}"), 4));
+        }
+        Ok(TrustOutcome::Unverifiable(e)) | Err(e) => {
+            return Ok(emit_v1_error(format, event_name, &format!("{e:#}"), 1));
+        }
+    }
+    let verdict =
+        match ironlint_core::runner::evaluate_v1(config, &root, event_name, changed.as_deref()) {
+            Ok(verdict) => verdict,
+            Err(e) => {
+                return Ok(emit_v1_error(format, event_name, &format!("{e:#}"), 1));
+            }
+        };
+    emit_v1(&verdict, format)?;
+    Ok(match verdict.status {
+        V1Status::Pass | V1Status::NotRun => 0,
+        V1Status::Violation => 2,
+        V1Status::Error => 3,
+    })
+}
+
+pub(crate) fn normalize_v1_root(root: &Path) -> std::result::Result<PathBuf, String> {
+    match root.canonicalize() {
+        Ok(root) if root.is_dir() => Ok(root),
+        Ok(root) => Err(format!("--root is not a directory: {}", root.display())),
+        Err(e) => Err(format!("failed to resolve --root {}: {e}", root.display())),
+    }
+}
+
+pub(crate) fn normalize_v1_path(root: &Path, path: &Path) -> std::result::Result<PathBuf, String> {
+    if path.to_string_lossy().contains('\0') {
+        return Err("v1 file paths may not contain NUL bytes".into());
+    }
+    let mut ancestor = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let mut missing_suffix = Vec::new();
+    loop {
+        let metadata = match std::fs::symlink_metadata(&ancestor) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                let Some(part) = ancestor.file_name() else {
+                    return Err(format!("file path escapes --root: {}", path.display()));
+                };
+                missing_suffix.push(part.to_os_string());
+                if !ancestor.pop() {
+                    return Err(format!("file path escapes --root: {}", path.display()));
+                }
+                continue;
+            }
+            Err(error) => {
+                return Err(format!("failed to resolve {}: {error}", path.display()));
+            }
+        };
+        let canonical = match ancestor.canonicalize() {
+            Ok(canonical) => canonical,
+            Err(_error) if metadata.file_type().is_symlink() => {
+                return Err(format!("file path escapes --root: {}", path.display()));
+            }
+            Err(error) => {
+                return Err(format!("failed to resolve {}: {error}", path.display()));
+            }
+        };
+        if !canonical.starts_with(root) {
+            return Err(format!("file path escapes --root: {}", path.display()));
+        }
+        if missing_suffix.iter().any(|part| part == OsStr::new("..")) {
+            return Err(format!(
+                "failed to resolve {}: missing ancestor",
+                path.display()
+            ));
+        }
+        let mut normalized = canonical;
+        for part in missing_suffix.iter().rev() {
+            normalized.push(part);
+        }
+        return Ok(normalized);
+    }
+}
+
+pub(crate) fn emit_v1_error(format: OutputFormat, event: &str, reason: &str, code: i32) -> i32 {
+    let verdict = V1Verdict::from_results(event, vec![], vec![], Some(reason.to_string()));
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&verdict).unwrap()),
+        OutputFormat::Human => eprintln!("error: {reason}"),
+    }
+    code
+}
+
+fn emit_v1(verdict: &V1Verdict, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(verdict)?),
+        OutputFormat::Human => {
+            for result in &verdict.results {
+                if let Some(reason) = &result.reason {
+                    eprintln!("error: [{}] {reason}", result.id);
+                } else {
+                    eprintln!("{}: {}", result.id, format_v1_outcome(result));
+                }
+                for (stream, output, truncated) in [
+                    ("stdout", &result.stdout, result.stdout_truncated),
+                    ("stderr", &result.stderr, result.stderr_truncated),
+                ] {
+                    if !output.is_empty() {
+                        eprintln!(
+                            "[{}] {stream}: {}",
+                            result.id,
+                            String::from_utf8_lossy(output)
+                        );
+                    }
+                    if truncated {
+                        eprintln!("[{}] {stream}: truncated", result.id);
+                    }
+                }
+            }
+            println!("{}", format_v1_status(verdict.status));
+        }
+    }
+    Ok(())
+}
+
+fn format_v1_outcome(result: &ironlint_core::verdict::V1CheckResult) -> &'static str {
+    match result.outcome {
+        ironlint_core::verdict::V1CheckOutcome::Pass => "pass",
+        ironlint_core::verdict::V1CheckOutcome::Violation => "violation",
+        ironlint_core::verdict::V1CheckOutcome::Error => "error",
+    }
+}
+
+fn format_v1_status(status: V1Status) -> &'static str {
+    match status {
+        V1Status::Pass => "pass",
+        V1Status::Violation => "violation",
+        V1Status::Error => "error",
+        V1Status::NotRun => "not_run",
     }
 }
 

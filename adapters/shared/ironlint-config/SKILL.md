@@ -7,9 +7,78 @@ metadata:
   version: 1.3.0
 ---
 
-# Authoring ironlint checks
+# IronLint policy authoring
 
-An ironlint policy lives in `.ironlint.yml` at the project root. A **check** is a file scope plus a shell command (or sequence of steps):
+## v1 policy format (acceptance contract)
+
+Use `version: 1` for the current acceptance-gate contract. This is a
+different format from the transition-era legacy guide below.
+
+```yaml
+version: 1
+
+execution:
+  timeout_secs: 30
+  total_timeout_secs: 300
+
+checks:
+  no-debug:
+    files: ["src/**/*.txt"]
+    on: [change, accept]
+    run: "! grep -n 'DEBUG' \"$IRONLINT_ROOT/src/example.txt\""
+
+  tests:
+    run: ./scripts/test
+```
+
+`version: 1` is required. `checks` must be a nonempty mapping; every check
+must have a nonempty `run`. A check's `files` is an optional nonempty glob or
+list of globs, and existing bare-glob behavior remains (`*.rs` matches at any
+depth). `on` defaults to `[accept]`; an explicit list may contain `accept`, or
+`change` and `accept` in either order. Duplicate or unknown events are errors,
+and an explicit list must include `accept`.
+
+Acceptance runs every configured check, regardless of `files` or changed paths.
+For `change`, only checks opted into `change` run; known changed paths filter
+those checks by `files`, while unknown paths run all change checks. Checks are
+selected once per invocation in ID order, and the command owns any file
+iteration. `files` is a feedback trigger, not a sandbox. There are no v1
+`steps`, `extends`, check-ranking fields, suppression, or feedback-only checks.
+
+The `execution` block is optional. It defaults to 30 seconds per check and 300
+seconds per invocation; both values must be positive integers. Put command
+sequences in reviewed scripts.
+
+### v1 command ABI
+
+Each `run` is executed as `sh -c` from `$IRONLINT_ROOT`, with stdin closed.
+Commands inspect the evaluated tree on disk, not proposed content on stdin. For
+example, the `no-debug` check above reads the actual file:
+
+```yaml
+run: "! grep -n 'DEBUG' \"$IRONLINT_ROOT/src/example.txt\""
+```
+
+The child environment starts cleared, then retains the safe `PATH`, `HOME`,
+`LANG`, `TZ`, `TMPDIR`, and `LC_*` values plus exactly these IronLint values:
+`IRONLINT_ROOT`, `IRONLINT_EVENT` (`change` or `accept`), and `IRONLINT_BIN`.
+Inherited `IRONLINT_*` values are cleared before those three are set. Legacy
+`IRONLINT_FILE`, `IRONLINT_FILES`, `IRONLINT_TMPFILE`, and
+`IRONLINT_PROPOSED_MANIFEST` are not supplied under v1.
+
+Exit 0 is a pass. Exit 1–125 is a check failure; IronLint continues to
+collect other ordinary failures. Exit 126/127, signal termination, or a
+timeout is an execution error and stops remaining checks. The CLI reports
+configuration/input errors as exit 1, untrusted policy as 4, check failures as 2,
+execution errors as 3, and a complete pass as 0.
+
+## Transition-era legacy format (0.4)
+
+The remainder of this guide applies only to configs without `version: 1`. It
+documents the retained write/pre-commit behavior while projects migrate to v1.
+
+A legacy ironlint policy lives in `.ironlint.yml` at the project root. A
+**check** is a file scope plus a shell command (or sequence of steps):
 
 ```yaml
 checks:

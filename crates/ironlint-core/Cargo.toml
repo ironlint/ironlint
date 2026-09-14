@@ -23,7 +23,7 @@ fs4.workspace = true
 # itself to unix keeps `cargo check --target x86_64-pc-windows-msvc` green
 # without needing any Windows-side shim (readiness review C2 / Task 3.7).
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", default-features = false, features = ["signal", "process"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "process"] }
 
 [dev-dependencies]
 tempfile.workspace = true

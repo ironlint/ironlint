@@ -81,6 +81,16 @@ fn normalize(command: &str) -> String {
                 }
                 s.push('$');
             }
+            // L1.2 (2026-08-28): backslash de-obfuscation. Shell unescapes
+            // `\x` -> `x` outside quotes; strip the backslash and keep the
+            // following char (`ir\onlint` -> `ironlint`, `.ironlint.ym\l` ->
+            // `.ironlint.yml`). A trailing backslash (line-continuation with
+            // no following char) is dropped.
+            '\\' => {
+                if let Some(nxt) = chars.next() {
+                    s.push(nxt);
+                }
+            }
             // Shell grouping chars — `(`, `)`, `{`, `}`. Dropping them turns
             // `(ironlint trust)` and `{ ironlint trust; }` into `ironlint trust`
             // (the `;` is a separator handled by the caller's segment split).
@@ -318,10 +328,38 @@ fn cd_into_policy_then_trust(segs: &[String]) -> bool {
         .any(|s| s == "trust" || s.starts_with("trust "))
 }
 
+/// Lexically normalize a path token: collapse runs of `/`, resolve `.`
+/// and `..` segments (drop `.`, pop on `..`), and preserve a leading `/`
+/// (absolute) or `~` (home). Pure string surgery — no filesystem access.
+/// Applies at the top of every protected-path matcher so an obfuscated
+/// spelling (`.claude//settings.json`, `.git/hooks/../hooks/pre-commit`)
+/// collapses onto the guarded path before matching (L1.1, 2026-08-28).
+fn normalize_path_token(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let absolute = token.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in token.split('/') {
+        match seg {
+            "" => {}  // collapse `//` runs
+            "." => {} // drop `.` segment
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    if absolute {
+        out.push('/');
+    }
+    out.push_str(&parts.join("/"));
+    out
+}
+
 /// True if a path token refers to the ironlint policy surface: the literal
 /// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
 /// `.ironlint/scripts/`. Matched on the path string, not the filesystem.
 fn is_policy_path(token: &str) -> bool {
+    let token = normalize_path_token(token);
     // `.ironlint.yml` as a SUFFIX (covers the bare token and any path-prefixed
     // form like `./.ironlint.yml` or `sub/.ironlint.yml`), OR `.ironlint.yml`
     // appearing with a leading slash mid-token (covered by suffix already, so
@@ -402,7 +440,8 @@ pub const ADAPTER_SURFACE_EXEC_DIRS: &[&str] = &[
 /// otherwise-pure classifier reads the environment (the process env is a
 /// legitimate input: gate-bash runs as a spawned process).
 fn is_adapter_surface_file(token: &str, home: Option<&str>) -> bool {
-    let expanded = expand_home(token, home);
+    let token = normalize_path_token(token);
+    let expanded = expand_home(&token, home);
     ADAPTER_SURFACE_FILES.iter().any(|f| expanded.ends_with(f))
 }
 
@@ -411,7 +450,8 @@ fn is_adapter_surface_file(token: &str, home: Option<&str>) -> bool {
 /// gate ALL write families (round-2 over-block-1 reconciliation — the W3
 /// self-trust surface is executable, not skill-authoring).
 fn is_adapter_surface_exec_dir(token: &str, home: Option<&str>) -> bool {
-    let expanded = expand_home(token, home);
+    let token = normalize_path_token(token);
+    let expanded = expand_home(&token, home);
     ADAPTER_SURFACE_EXEC_DIRS
         .iter()
         .any(|d| is_surface_dir(&expanded, d))
@@ -425,7 +465,8 @@ fn is_adapter_surface_exec_dir(token: &str, home: Option<&str>) -> bool {
 /// `ADAPTER_SURFACE_DIRS` minus the exec subset so new registry dirs default
 /// to deletion-only and the W3-R2 parity test still covers the union.
 fn is_adapter_surface_profile_dir(token: &str, home: Option<&str>) -> bool {
-    let expanded = expand_home(token, home);
+    let token = normalize_path_token(token);
+    let expanded = expand_home(&token, home);
     ADAPTER_SURFACE_DIRS
         .iter()
         .filter(|d| !ADAPTER_SURFACE_EXEC_DIRS.contains(d))
@@ -473,6 +514,7 @@ fn is_surface_dir(token: &str, dir: &str) -> bool {
 /// spelling; linked-worktree hooks live under `.git/worktrees/*/hooks/` in
 /// the repo, still `.git/...`-prefixed.
 fn is_floor_hook_path(token: &str) -> bool {
+    let token = normalize_path_token(token);
     token.ends_with(".git/hooks/pre-commit")
         || (token.ends_with('*') && token.contains(".git/hooks/pre-commit"))
 }
@@ -495,9 +537,10 @@ fn is_protected_path(token: &str, home: Option<&str>) -> bool {
 /// dest, editors) deliberately exclude dirs: authoring a file under a surface
 /// dir via Bash stays legal (round-2 over-block 1).
 fn is_delete_target_protected(token: &str, home: Option<&str>) -> bool {
-    is_protected_path(token, home)
-        || is_adapter_surface_profile_dir(token, home)
-        || is_surface_dir(&expand_home(token, home), ".git/hooks")
+    let token = normalize_path_token(token);
+    is_protected_path(&token, home)
+        || is_adapter_surface_profile_dir(&token, home)
+        || is_surface_dir(&expand_home(&token, home), ".git/hooks")
 }
 
 /// W3-R3 git-floor bypass forms: `git commit --no-verify`, `git -c
@@ -514,7 +557,7 @@ fn is_git_commit_escape(segment: &str) -> bool {
     if tokens.first() != Some(&"git") {
         return false;
     }
-    let sub = git_subcommand(&tokens);
+    let sub = git_subcommand_index(&tokens).map(|i| tokens[i]);
     for (i, t) in tokens.iter().enumerate() {
         match *t {
             // Long form covers EVERY hook-running subcommand.
@@ -632,11 +675,74 @@ fn config_mutates_hooks_path(tokens: &[&str]) -> bool {
     false
 }
 
+/// Detect an empty `core.hooksPath` set before normalization erases its
+/// quoted value. Keep raw shell-word boundaries so `-C 'foo bar'` and `' '`
+/// remain single arguments, then compare dequoted words and the whole value.
+fn raw_config_empty_hooks_path(raw: &str) -> bool {
+    let stripped = strip_wrappers(raw);
+    let words = shell_token_spans(&stripped);
+    let dequoted: Vec<String> = words.iter().map(|(_, word)| normalize(word)).collect();
+    let toks: Vec<&str> = dequoted.iter().map(String::as_str).collect();
+    if toks.first() != Some(&"git") {
+        return false;
+    }
+    let Some(config_pos) = git_subcommand_index(&toks) else {
+        return false;
+    };
+    if toks[config_pos] != "config" {
+        return false;
+    }
+    toks.iter()
+        .enumerate()
+        .skip(config_pos + 1)
+        .any(|(i, key)| {
+            key.eq_ignore_ascii_case("core.hookspath")
+                && words.get(i + 1).is_some_and(|(_, raw_value)| {
+                    raw_value.contains(['\'', '"', '\\']) && toks[i + 1].is_empty()
+                })
+        })
+}
+
+/// Shell words with byte starts, retaining quotes so `-C 'foo bar'` is one
+/// argument and the raw quoted value remains available for inspection.
+fn shell_token_spans(input: &str) -> Vec<(usize, &str)> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    let mut escaped = false;
+    for (i, ch) in input.char_indices() {
+        if start.is_none() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            start = Some(i);
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if quote != Some('\'') => escaped = true,
+            '\'' | '"' if quote.is_none() => quote = Some(ch),
+            '\'' | '"' if quote == Some(ch) => quote = None,
+            _ if ch.is_whitespace() && quote.is_none() => {
+                words.push((start.unwrap(), &input[start.unwrap()..i]));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = start {
+        words.push((start, &input[start..]));
+    }
+    words
+}
+
 /// The first non-flag token AFTER the `git` binary — the subcommand. Skips
 /// value-taking adjustments (`-c`/`-C`/`--config`) AND their values, so a
 /// `-c key=val` before the subcommand resolves correctly
 /// (`git -c user.name=x commit` -> `commit`, round-2 finding 1).
-fn git_subcommand<'a>(tokens: &[&'a str]) -> Option<&'a str> {
+fn git_subcommand_index(tokens: &[&str]) -> Option<usize> {
     let mut i = 1;
     while i < tokens.len() {
         let t = tokens[i];
@@ -648,7 +754,7 @@ fn git_subcommand<'a>(tokens: &[&'a str]) -> Option<&'a str> {
             i += 1; // other flag, no value
             continue;
         }
-        return Some(t);
+        return Some(i);
     }
     None
 }
@@ -670,7 +776,6 @@ fn rm_chmod_targets_protected(tokens: &[&str], home: Option<&str>) -> bool {
         .skip(1)
         .any(|t| !t.starts_with('-') && is_delete_target_protected(t, home))
 }
-
 /// True if the normalized segment writes to a protected surface. Detected via:
 ///   - redirect operators targeting a protected path: >, >>, >|, &>, &>>
 ///     (bare, start-glued, or end-glued to the preceding arg)
@@ -873,6 +978,15 @@ pub fn decide(command: &str) -> Decision {
 pub fn decide_with_home(command: &str, home: Option<&str>) -> Decision {
     let n = normalize(command);
     let segs = segments(&n);
+
+    // L1.3: the empty-quoted `core.hooksPath` set is invisible after normalize
+    // (quotes stripped), so check it on the RAW command's segments first.
+    if segments(command)
+        .iter()
+        .any(|s| raw_config_empty_hooks_path(s))
+    {
+        return Decision::Block(GIT_ESCAPE_REASON.to_string());
+    }
 
     // `cd .ironlint && trust`: a bare `trust` after a `cd` into the policy
     // dir. The `&&` splits this into two segments, so check across the
@@ -2085,5 +2199,103 @@ mod tests {
                 "expected Block for {cmd:?}"
             );
         }
+    }
+
+    // =====================================================================
+    // L1 (2026-08-28 review): lexical path normalization + backslash
+    // de-obfuscation + empty-quoted core.hooksPath set. See
+    // plans/2026-08-28-gate-bash-floor-review-fixes.md (Task L1).
+    // =====================================================================
+
+    // --- L1.1: lexical path normalization (collapse //, drop ., resolve ..) ---
+    #[test]
+    fn blocks_redirect_slash_collapse_claude_settings() {
+        assert_blocks("echo x > .claude//settings.json");
+    }
+
+    #[test]
+    fn blocks_redirect_dot_segment_claude_settings() {
+        assert_blocks("echo x > .claude/./settings.json");
+    }
+
+    #[test]
+    fn blocks_redirect_floor_hook_dot_segment() {
+        assert_blocks("echo x > .git/hooks/./pre-commit");
+    }
+
+    #[test]
+    fn blocks_redirect_floor_hook_dotdot() {
+        assert_blocks("echo x > .git/hooks/../hooks/pre-commit");
+    }
+
+    #[test]
+    fn blocks_rm_floor_hook_dot_segment() {
+        assert_blocks("rm .git/./hooks/pre-commit");
+    }
+
+    #[test]
+    fn blocks_cp_to_pi_extensions_dot_segment() {
+        assert_blocks("cp evil.sh .pi/./extensions/");
+    }
+
+    // allow-pins that must stay green under path normalization
+    #[test]
+    fn allows_profile_dir_content_write_after_normalization() {
+        assert_allows("echo hi > .claude/agents/foo.md");
+    }
+
+    #[test]
+    fn allows_surface_source_read_after_normalization() {
+        assert_allows("cp .codex/hooks.json /tmp/backup");
+    }
+
+    #[test]
+    fn allows_ls_sub_dotdot_src() {
+        assert_allows("ls sub/../src");
+    }
+
+    // --- L1.2: backslash de-obfuscation ---
+    #[test]
+    fn blocks_backslash_obfuscated_policy_and_trust() {
+        assert_blocks("echo x > .ironlint.ym\\l");
+        assert_blocks("ir\\onlint trust");
+    }
+
+    #[test]
+    fn allows_echo_percent_with_backslash() {
+        assert_allows("echo \"100\\%\"");
+    }
+
+    // --- L1.3: empty/blank quoted core.hooksPath value ---
+    #[test]
+    fn blocks_config_empty_hooks_path_quoted_empty() {
+        assert_blocks("git config core.hooksPath ''");
+    }
+
+    #[test]
+    fn blocks_config_empty_hooks_path_quoted_space() {
+        assert_blocks("git config core.hooksPath ' '");
+    }
+
+    #[test]
+    fn blocks_config_empty_hooks_path_after_git_directory_option() {
+        assert_blocks("git -C core.hooksPath config core.hooksPath ''");
+        assert_blocks("git -C 'foo bar' config core.hooksPath ' '");
+        assert_blocks("git 'config' core.hooksPath ''");
+        assert_blocks("git config 'core.hooksPath' ''");
+        assert_blocks("git config core.hooksPath \\ ");
+        assert_blocks("git config core.hooks\\Path ''");
+        assert_blocks("git config core.hooksPath '' # config");
+    }
+
+    #[test]
+    fn allows_config_bare_hooks_path_read_still_allows() {
+        assert_allows("git config core.hooksPath");
+        assert_allows("git config --get core.hooksPath");
+    }
+
+    #[test]
+    fn allows_config_read_after_unicode_git_option() {
+        assert_allows("git -C İİİİİİİİİİİİİİİİ config core.hooksPath");
     }
 }

@@ -2,41 +2,106 @@ use std::path::Path;
 
 use super::{CheckResult, DoctorContext, Status};
 
-pub(super) fn check_config_present(ctx: &DoctorContext) -> CheckResult {
-    if ctx.config_path.exists() {
-        CheckResult {
-            name: "config",
-            status: Status::Pass,
-            detail: format!("{} exists", ctx.config_path.display()),
-            remediation: None,
+pub(super) enum ConfigSnapshot {
+    Missing,
+    Loaded(crate::commands::config::ReadOnlyConfig),
+    Failed(anyhow::Error),
+}
+
+pub(super) fn load_config_snapshot(config_path: &Path) -> ConfigSnapshot {
+    snapshot_from_load(
+        config_path,
+        crate::commands::config::load_read_only(config_path),
+    )
+}
+
+fn snapshot_from_load(
+    config_path: &Path,
+    result: anyhow::Result<crate::commands::config::ReadOnlyConfig>,
+) -> ConfigSnapshot {
+    match result {
+        Ok(config) => ConfigSnapshot::Loaded(config),
+        Err(error)
+            if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                )
+            }) && matches!(
+                std::fs::symlink_metadata(config_path),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    )
+            ) =>
+        {
+            ConfigSnapshot::Missing
         }
-    } else {
-        CheckResult {
+        Err(error) => ConfigSnapshot::Failed(error),
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn check_config_present(ctx: &DoctorContext) -> CheckResult {
+    let snapshot = load_config_snapshot(&ctx.config_path);
+    check_config_present_snapshot(ctx, &snapshot)
+}
+
+pub(super) fn check_config_present_snapshot(
+    ctx: &DoctorContext,
+    snapshot: &ConfigSnapshot,
+) -> CheckResult {
+    match snapshot {
+        ConfigSnapshot::Missing => CheckResult {
             name: "config",
             status: Status::Fail,
             detail: format!("{} not found", ctx.config_path.display()),
             remediation: Some("run `ironlint init` to scaffold a starter config".into()),
-        }
+        },
+        ConfigSnapshot::Loaded(_) | ConfigSnapshot::Failed(_) => CheckResult {
+            name: "config",
+            status: Status::Pass,
+            detail: format!("{} exists", ctx.config_path.display()),
+            remediation: None,
+        },
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
-    if !ctx.config_path.exists() {
-        return CheckResult {
+    let snapshot = load_config_snapshot(&ctx.config_path);
+    check_config_parses_snapshot(ctx, &snapshot)
+}
+
+pub(super) fn check_config_parses_snapshot(
+    _ctx: &DoctorContext,
+    snapshot: &ConfigSnapshot,
+) -> CheckResult {
+    match snapshot {
+        ConfigSnapshot::Missing => CheckResult {
             name: "parses",
             status: Status::Fail,
             detail: "config missing; nothing to parse".into(),
             remediation: Some("run `ironlint init` first".into()),
-        };
-    }
-    match ironlint_core::config::parse_file_with_extends(&ctx.config_path) {
-        Ok(cfg) => CheckResult {
+        },
+        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::Legacy {
+            config, ..
+        }) => CheckResult {
             name: "parses",
             status: Status::Pass,
-            detail: format!("config parses ({} check(s))", cfg.checks.len()),
+            detail: format!("config parses ({} check(s))", config.checks.len()),
             remediation: None,
         },
-        Err(e) => CheckResult {
+        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::V1(config)) => {
+            CheckResult {
+                name: "parses",
+                status: Status::Pass,
+                detail: format!("config parses ({} check(s))", config.checks.len()),
+                remediation: None,
+            }
+        }
+        ConfigSnapshot::Failed(e) => CheckResult {
             name: "parses",
             status: Status::Fail,
             detail: format!("{e:#}"),
@@ -49,10 +114,40 @@ pub(super) fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
 /// `.ironlint/scripts/`, check that the path exists and is executable. Inline commands
 /// (e.g. `grep -q TODO && exit 2`) are skipped — detection: `run` contains a
 /// space or doesn't look like a file path.
+#[allow(dead_code)]
 pub(super) fn check_script_paths(ctx: &DoctorContext) -> CheckResult {
-    let cfg = match ironlint_core::config::parse_file_with_extends(&ctx.config_path) {
-        Ok(c) => c,
-        Err(_) => {
+    let snapshot = load_config_snapshot(&ctx.config_path);
+    check_script_paths_snapshot(ctx, &snapshot)
+}
+
+pub(super) fn check_script_paths_snapshot(
+    ctx: &DoctorContext,
+    snapshot: &ConfigSnapshot,
+) -> CheckResult {
+    let (check_count, bad) = match snapshot {
+        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::Legacy {
+            config, ..
+        }) => {
+            let mut bad = Vec::new();
+            for (id, check) in &config.checks {
+                for step in check.effective_steps() {
+                    if let Some(issue) = check_run_path(&ctx.dir, id, &step.run) {
+                        bad.push(issue);
+                    }
+                }
+            }
+            (config.checks.len(), bad)
+        }
+        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::V1(config)) => {
+            let mut bad = Vec::new();
+            for (id, check) in &config.checks {
+                if let Some(issue) = check_run_path(&ctx.dir, id, &check.run) {
+                    bad.push(issue);
+                }
+            }
+            (config.checks.len(), bad)
+        }
+        ConfigSnapshot::Missing | ConfigSnapshot::Failed(_) => {
             return CheckResult {
                 name: "check_scripts",
                 status: Status::Warn,
@@ -61,19 +156,11 @@ pub(super) fn check_script_paths(ctx: &DoctorContext) -> CheckResult {
             };
         }
     };
-    let mut bad: Vec<String> = Vec::new();
-    for (id, check) in &cfg.checks {
-        for step in check.effective_steps() {
-            if let Some(issue) = check_run_path(&ctx.dir, id, &step.run) {
-                bad.push(issue);
-            }
-        }
-    }
     if bad.is_empty() {
         CheckResult {
             name: "check_scripts",
             status: Status::Pass,
-            detail: format!("{} check(s) checked", cfg.checks.len()),
+            detail: format!("{} check(s) checked", check_count),
             remediation: None,
         }
     } else {
@@ -116,4 +203,149 @@ pub(super) fn check_run_path(dir: &Path, check_id: &str, run: &str) -> Option<St
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn doctor_rows_use_one_snapshot_after_policy_replacement() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join(".ironlint.yml");
+        fs::write(
+            &config_path,
+            "version: 1\nchecks:\n  check:\n    run: exit 0\n",
+        )
+        .unwrap();
+        let snapshot = load_config_snapshot(&config_path);
+        fs::write(
+            &config_path,
+            "version: 1\nchecks:\n  broken:\n    on: [change]\n    run: exit 0\n",
+        )
+        .unwrap();
+        let ctx = DoctorContext {
+            dir: dir.path().to_path_buf(),
+            config_path,
+        };
+
+        assert_eq!(
+            check_config_parses_snapshot(&ctx, &snapshot).status,
+            Status::Pass
+        );
+        assert_eq!(
+            check_script_paths_snapshot(&ctx, &snapshot).status,
+            Status::Pass
+        );
+    }
+
+    #[test]
+    fn doctor_rows_use_one_snapshot_after_config_deletion() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join(".ironlint.yml");
+        fs::write(
+            &config_path,
+            "version: 1\nchecks:\n  check:\n    run: exit 0\n",
+        )
+        .unwrap();
+        let snapshot = load_config_snapshot(&config_path);
+        fs::remove_file(&config_path).unwrap();
+        let ctx = DoctorContext {
+            dir: dir.path().to_path_buf(),
+            config_path,
+        };
+
+        assert_eq!(
+            check_config_present_snapshot(&ctx, &snapshot).status,
+            Status::Pass
+        );
+        assert_eq!(
+            check_config_parses_snapshot(&ctx, &snapshot).status,
+            Status::Pass
+        );
+        assert_eq!(
+            check_script_paths_snapshot(&ctx, &snapshot).status,
+            Status::Pass
+        );
+    }
+
+    #[test]
+    fn doctor_rows_treat_not_found_during_load_as_missing() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join(".ironlint.yml");
+        fs::write(
+            &config_path,
+            "version: 1\nchecks:\n  check:\n    run: exit 0\n",
+        )
+        .unwrap();
+        fs::remove_file(&config_path).unwrap();
+        let snapshot = snapshot_from_load(
+            &config_path,
+            crate::commands::config::load_read_only(&config_path),
+        );
+        let ctx = DoctorContext {
+            dir: dir.path().to_path_buf(),
+            config_path,
+        };
+
+        assert_eq!(
+            check_config_present_snapshot(&ctx, &snapshot).status,
+            Status::Fail
+        );
+        assert_eq!(
+            check_config_parses_snapshot(&ctx, &snapshot).status,
+            Status::Fail
+        );
+        assert_eq!(
+            check_script_paths_snapshot(&ctx, &snapshot).status,
+            Status::Warn
+        );
+    }
+
+    #[test]
+    fn doctor_reports_missing_extended_policy_without_claiming_root_absent() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join(".ironlint.yml");
+        fs::write(&config_path, "extends: [missing.yml]\nchecks: {}\n").unwrap();
+        let snapshot = load_config_snapshot(&config_path);
+        let ctx = DoctorContext {
+            dir: dir.path().to_path_buf(),
+            config_path,
+        };
+
+        let present = check_config_present_snapshot(&ctx, &snapshot);
+        assert_eq!(present.status, Status::Pass);
+        assert!(present.remediation.is_none());
+        let parses = check_config_parses_snapshot(&ctx, &snapshot);
+        assert_eq!(parses.status, Status::Fail);
+        assert!(parses.detail.contains("missing.yml"), "{}", parses.detail);
+    }
+
+    #[test]
+    fn doctor_rows_treat_not_a_directory_during_load_as_missing() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("not-a-directory");
+        fs::write(&parent, "not a directory").unwrap();
+        let config_path = parent.join(".ironlint.yml");
+        let snapshot = load_config_snapshot(&config_path);
+        let ctx = DoctorContext {
+            dir: dir.path().to_path_buf(),
+            config_path,
+        };
+
+        assert_eq!(
+            check_config_present_snapshot(&ctx, &snapshot).status,
+            Status::Fail
+        );
+        assert_eq!(
+            check_config_parses_snapshot(&ctx, &snapshot).status,
+            Status::Fail
+        );
+        assert_eq!(
+            check_script_paths_snapshot(&ctx, &snapshot).status,
+            Status::Warn
+        );
+    }
 }

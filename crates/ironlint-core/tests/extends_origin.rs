@@ -2,7 +2,7 @@
 //! every check to the file it was defined in, with local definitions winning
 //! on collision (matching `resolve`'s merge semantics).
 
-use ironlint_core::config::extends::resolve_with_origin;
+use ironlint_core::config::extends::{resolve_with_origin, resolve_with_origin_from_str};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
@@ -107,4 +107,28 @@ fn origin_resolve_local_execution_timeout_wins_over_parent() {
         5,
         "resolve_with_origin: child's explicit timeout overrides the inherited one"
     );
+}
+
+#[test]
+fn origin_resolve_uses_supplied_root_bytes() {
+    let dir = tempdir().unwrap();
+    let parent = dir.path().join("parent.yml");
+    write(
+        &parent,
+        "checks:\n  inherited:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let child = dir.path().join(".ironlint.yml");
+    write(
+        &child,
+        "extends: [\"parent.yml\"]\nchecks:\n  local:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let canonical_child = child.canonicalize().unwrap();
+    let input = std::fs::read_to_string(&canonical_child).unwrap();
+    write(&child, "checks: [not-a-map]\n");
+
+    let (config, origins) = resolve_with_origin_from_str(&canonical_child, &input).unwrap();
+
+    assert!(config.checks.contains_key("local"));
+    assert!(config.checks.contains_key("inherited"));
+    assert_eq!(origins["local"], canonical_child);
 }

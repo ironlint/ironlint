@@ -4,11 +4,30 @@ use crate::runner::{
     materialize_tmpfile, sweep_stale_tmpfiles, CheckInput, CheckOptions, ExplainOutcome,
     IronLintEngine,
 };
-use crate::verdict::Status;
+use crate::verdict::{Status, V1Status};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
+
+#[test]
+fn v1_evaluate_runs_checks_once_and_keeps_violation_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("policy.yml"),
+        "version: 1\nchecks:\n  a: {run: 'printf a; exit 7'}\n  b: {run: 'printf b; exit 0'}\n",
+    )
+    .unwrap();
+    let verdict =
+        crate::runner::evaluate_v1(&dir.path().join("policy.yml"), dir.path(), "accept", None)
+            .unwrap();
+    assert_eq!(verdict.status, V1Status::Violation);
+    assert_eq!(verdict.results.len(), 2);
+    assert_eq!(verdict.results[0].id, "a");
+    assert_eq!(verdict.results[0].exit_status, Some(7));
+    assert_eq!(verdict.results[1].id, "b");
+    assert!(verdict.not_run.is_empty());
+}
 
 fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
     let p = dir.join(name);

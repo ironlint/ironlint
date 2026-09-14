@@ -16,8 +16,8 @@ pub struct Cli {
 pub enum Command {
     /// Run the pipeline against a file, a diff, or — with neither — sweep the repo.
     Check {
-        #[arg(long)]
-        file: Option<PathBuf>,
+        #[arg(long = "file", action = clap::ArgAction::Append)]
+        file: Vec<PathBuf>,
         #[arg(long)]
         diff: Option<PathBuf>,
         /// Evaluate this proposed post-edit content instead of reading
@@ -45,9 +45,18 @@ pub enum Command {
         /// rejected at the arg layer so typos never reach `$IRONLINT_EVENT`.
         #[arg(
             long,
-            value_parser = clap::builder::PossibleValuesParser::new(["write", "pre-commit"])
+            value_parser = clap::builder::PossibleValuesParser::new([
+                "write",
+                "pre-commit",
+                "change",
+                "accept",
+            ])
         )]
         event: Option<String>,
+        /// Root of the tree evaluated by a v1 policy. Relative --file paths
+        /// resolve under this directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
         /// After the verdict, print a per-gate outcome report to stderr.
         /// Rows cover per-file (write-lifecycle) checks; batched pre-commit
         /// checks emit no rows.
@@ -135,6 +144,10 @@ pub enum Command {
         format: OutputFormat,
         #[arg(long, default_value = ".ironlint.yml")]
         config: PathBuf,
+        /// Root of the tree evaluated by a v1 policy. Relative file paths
+        /// resolve under this directory. Defaults to the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// Print the post-extends merged check set.
     ///
