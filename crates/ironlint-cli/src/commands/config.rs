@@ -62,7 +62,7 @@ fn is_versioned_input(input: &str) -> bool {
         prefix.push_str(line);
         prefix.push('\n');
     }
-    malformed_root_version_by_indent(input)
+    malformed_root_flow_has_version(input) || malformed_root_version_by_indent(input)
 }
 
 fn malformed_root_version_by_indent(input: &str) -> bool {
@@ -88,10 +88,22 @@ fn malformed_root_version_by_indent(input: &str) -> bool {
             continue;
         }
         pending_flow = false;
+        let indent = line.len() - trimmed.len();
+        if trimmed
+            .strip_prefix("? ")
+            .is_some_and(malformed_version_name)
+        {
+            if indent < shallowest {
+                shallowest = indent;
+                has_version = false;
+            }
+            if indent == shallowest {
+                has_version = true;
+            }
+        }
         let Some((key, value)) = trimmed.split_once(':') else {
             continue;
         };
-        let indent = line.len() - trimmed.len();
         if indent < shallowest {
             shallowest = indent;
             has_version = false;
@@ -113,6 +125,91 @@ fn malformed_root_version_by_indent(input: &str) -> bool {
         }
     }
     has_version
+}
+
+fn malformed_root_flow_has_version(input: &str) -> bool {
+    let mut offset = 0;
+    for line in input.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            if trimmed
+                .strip_prefix("---")
+                .is_some_and(|rest| rest.trim().is_empty() || rest.trim_start().starts_with('#'))
+            {
+                offset += line.len();
+                continue;
+            }
+            let input = &input[offset + line.len() - trimmed.len()..];
+            let input = input.strip_prefix("---").unwrap_or(input).trim_start();
+            return input
+                .strip_prefix('{')
+                .is_some_and(malformed_flow_mapping_has_version);
+        }
+        offset += line.len();
+    }
+    false
+}
+
+fn malformed_flow_mapping_has_version(input: &str) -> bool {
+    let mut depth = 1usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut previous = ' ';
+    let mut in_comment = false;
+    let mut key_start = 0;
+    let mut looking_for_key = true;
+    for (index, ch) in input.char_indices() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+                if looking_for_key {
+                    key_start = index + ch.len_utf8();
+                }
+            }
+            previous = ch;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if delimiter == '"' && ch == '\\' && !escaped {
+                escaped = true;
+            } else {
+                if ch == delimiter && !escaped {
+                    quote = None;
+                }
+                escaped = false;
+            }
+            previous = ch;
+            continue;
+        }
+        match ch {
+            '#' if previous.is_whitespace() => in_comment = true,
+            '\'' | '"' => quote = Some(ch),
+            '[' | '{' => depth += 1,
+            ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return false;
+                }
+            }
+            ':' if depth == 1 && looking_for_key => {
+                if malformed_version_name(&input[key_start..index]) {
+                    return true;
+                }
+                looking_for_key = false;
+            }
+            ',' if depth == 1 => {
+                key_start = index + ch.len_utf8();
+                looking_for_key = true;
+            }
+            _ => {}
+        }
+        previous = ch;
+    }
+    false
+}
+
+fn malformed_version_name(input: &str) -> bool {
+    matches!(input.trim(), "version" | "\"version\"" | "'version'")
 }
 
 fn advance_flow_collection(
@@ -312,6 +409,8 @@ mod tests {
         ));
         assert!(!is_versioned_input("checks: &a\n  [\nversion: 1\n"));
         assert!(!is_versioned_input("checks: &a # note\n  [\nversion: 1\n"));
+        assert!(!is_versioned_input("{checks: {version: 1}, broken: ["));
+        assert!(!is_versioned_input("{checks: \"version: 1\", broken: ["));
         assert!(is_versioned_input("checks: [a,,b]\nversion: 1\n"));
     }
 

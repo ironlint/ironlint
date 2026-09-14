@@ -315,6 +315,35 @@ pub(crate) fn normalize_v1_root(root: &Path) -> std::result::Result<PathBuf, Str
     }
 }
 
+fn normalize_v1_trigger_path(root: &Path, path: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(root).ok().or_else(|| {
+        if path.is_absolute() {
+            path.ancestors().find_map(|ancestor| {
+                (ancestor.canonicalize().ok().as_deref() == Some(root))
+                    .then(|| path.strip_prefix(ancestor).ok())
+                    .flatten()
+            })
+        } else {
+            Some(path)
+        }
+    })?;
+    let mut normalized = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized = normalized.canonicalize().ok()?;
+                if !normalized.starts_with(root) || !normalized.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    normalized.starts_with(root).then_some(normalized)
+}
+
 pub(crate) fn normalize_v1_path(root: &Path, path: &Path) -> std::result::Result<PathBuf, String> {
     if path.to_string_lossy().contains('\0') {
         return Err("v1 file paths may not contain NUL bytes".into());
@@ -364,6 +393,9 @@ pub(crate) fn normalize_v1_path(root: &Path, path: &Path) -> std::result::Result
                 "failed to resolve {}: missing ancestor",
                 path.display()
             ));
+        }
+        if let Some(normalized) = normalize_v1_trigger_path(root, path) {
+            return Ok(normalized);
         }
         let mut normalized = canonical;
         for part in missing_suffix.iter().rev() {

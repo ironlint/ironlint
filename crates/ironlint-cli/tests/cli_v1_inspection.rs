@@ -389,6 +389,88 @@ fn v1_check_accepts_absolute_file_through_symlink_root_alias() {
     assert_eq!(value["status"], "pass");
 }
 
+#[cfg(unix)]
+#[test]
+fn v1_symlink_paths_keep_the_submitted_name_for_check_and_explain() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempdir().unwrap();
+    let config = root.path().join("policy.yml");
+    fs::write(
+        &config,
+        "version: 1\nchecks:\n  rust: {files: ['*.rs'], on: [change, accept], run: 'exit 1'}\n  linked: {files: ['linked/**'], on: [change, accept], run: 'exit 1'}\n  docs: {files: ['docs/**'], on: [change, accept], run: 'exit 1'}\n",
+    )
+    .unwrap();
+    let payload = root.path().join("payload.txt");
+    fs::write(&payload, "payload\n").unwrap();
+    symlink(&payload, root.path().join("source.rs")).unwrap();
+    let real_dir = root.path().join("real");
+    fs::create_dir_all(&real_dir).unwrap();
+    fs::write(real_dir.join("child.txt"), "child\n").unwrap();
+    symlink(&real_dir, root.path().join("linked")).unwrap();
+    fs::create_dir(root.path().join("src")).unwrap();
+    fs::create_dir(root.path().join("docs")).unwrap();
+    fs::write(root.path().join("docs/a.txt"), "docs\n").unwrap();
+    let xdg = common::blessed_store(&config);
+
+    for (file, expected_check) in [
+        ("source.rs".to_string(), "rust"),
+        (
+            root.path().join("linked/child.txt").display().to_string(),
+            "linked",
+        ),
+        ("src/../docs/a.txt".to_string(), "docs"),
+        ("src/../source.rs".to_string(), "rust"),
+        ("src/../linked/child.txt".to_string(), "linked"),
+    ] {
+        let check = Command::cargo_bin("ironlint")
+            .unwrap()
+            .args([
+                "check",
+                "--config",
+                config.to_str().unwrap(),
+                "--root",
+                root.path().to_str().unwrap(),
+                "--event",
+                "change",
+                "--file",
+                &file,
+                "--format",
+                "json",
+            ])
+            .env("XDG_CONFIG_HOME", xdg.path())
+            .output()
+            .unwrap();
+        assert_eq!(check.status.code(), Some(2));
+        let check: Value = serde_json::from_slice(&check.stdout).unwrap();
+        assert_eq!(check["results"][0]["id"], expected_check);
+
+        let explain = Command::cargo_bin("ironlint")
+            .unwrap()
+            .args([
+                "explain",
+                "--config",
+                config.to_str().unwrap(),
+                "--root",
+                root.path().to_str().unwrap(),
+                "--format",
+                "json",
+                &file,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(explain.status.code(), Some(0));
+        let explain: Value = serde_json::from_slice(&explain.stdout).unwrap();
+        let row = explain
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["check"] == expected_check)
+            .unwrap();
+        assert_eq!(row["change"], "match");
+    }
+}
+
 #[test]
 fn v1_explain_rejects_invalid_root_and_escaping_path() {
     let root = tempdir().unwrap();

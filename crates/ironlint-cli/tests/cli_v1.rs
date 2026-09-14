@@ -256,6 +256,68 @@ fn indented_malformed_v1_config_keeps_schema_seven_errors() {
 }
 
 #[test]
+fn malformed_flow_and_explicit_key_v1_configs_keep_schema_seven_errors() {
+    for policy in [
+        "{version: 1, checks: [",
+        "--- # policy\n{version: 1, checks: [",
+        "{ version: 1, checks: [",
+        "{checks: {}, version: 1, broken: [",
+        "{checks: {}, # note\n version: 1, broken: [",
+        "? version\n: 1\nchecks: [",
+    ] {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("policy.yml");
+        fs::write(&cfg, policy).unwrap();
+
+        for args in [
+            vec![
+                "check".to_string(),
+                "--config".to_string(),
+                cfg.to_str().unwrap().to_string(),
+                "--root".to_string(),
+                dir.path().to_str().unwrap().to_string(),
+                "--event".to_string(),
+                "accept".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            vec![
+                "check".to_string(),
+                "--config".to_string(),
+                cfg.to_str().unwrap().to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+                "--bogus".to_string(),
+            ],
+        ] {
+            let output = Command::cargo_bin("ironlint")
+                .unwrap()
+                .args(args)
+                .output()
+                .unwrap();
+
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "policy: {policy:?}, stdout: {}, stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                value["schema"],
+                7,
+                "policy: {policy:?}, stdout: {}, stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(value["event"], "accept");
+            assert_eq!(value["status"], "error");
+        }
+    }
+}
+
+#[test]
 fn invalid_utf8_v1_marker_keeps_schema_seven_error() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join("policy.yml");

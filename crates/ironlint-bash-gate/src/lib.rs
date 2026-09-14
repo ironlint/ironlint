@@ -356,8 +356,9 @@ fn normalize_path_token(token: &str) -> String {
 }
 
 /// True if a path token refers to the ironlint policy surface: the literal
-/// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
-/// `.ironlint/scripts/`. Matched on the path string, not the filesystem.
+/// `.ironlint.yml` (at any depth — bare or path-prefixed) or the
+/// `.ironlint/scripts` directory and anything beneath it. Matched on the path
+/// string, not the filesystem.
 fn is_policy_path(token: &str) -> bool {
     let token = normalize_path_token(token);
     // `.ironlint.yml` as a SUFFIX (covers the bare token and any path-prefixed
@@ -374,6 +375,7 @@ fn is_policy_path(token: &str) -> bool {
     token.ends_with(".ironlint.yml")
         || token.contains("/.ironlint.yml")
         || token.contains(".ironlint/scripts/")
+        || is_surface_dir(&token, ".ironlint/scripts")
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +655,7 @@ fn config_mutates_hooks_path(tokens: &[&str]) -> bool {
         return false;
     };
     let after = &tokens[ci + 1..];
-    let mutating_flag = after.iter().any(|t| {
+    let mutating_flag = after.iter().take_while(|t| **t != "--").any(|t| {
         matches!(
             *t,
             "--add" | "--unset" | "--unset-all" | "--rename-section" | "--remove-section"
@@ -675,6 +677,15 @@ fn config_mutates_hooks_path(tokens: &[&str]) -> bool {
     false
 }
 
+/// True when raw `git config` words explicitly select a read action. These
+/// modes may take a value-pattern after the key, including a blank one.
+fn config_has_read_action(after: &[&str]) -> bool {
+    after
+        .iter()
+        .take_while(|t| **t != "--")
+        .any(|t| matches!(*t, "--get" | "--get-all"))
+}
+
 /// Detect an empty `core.hooksPath` set before normalization erases its
 /// quoted value. Keep raw shell-word boundaries so `-C 'foo bar'` and `' '`
 /// remain single arguments, then compare dequoted words and the whole value.
@@ -690,6 +701,9 @@ fn raw_config_empty_hooks_path(raw: &str) -> bool {
         return false;
     };
     if toks[config_pos] != "config" {
+        return false;
+    }
+    if config_has_read_action(&toks[config_pos + 1..]) {
         return false;
     }
     toks.iter()
@@ -2238,6 +2252,27 @@ mod tests {
         assert_blocks("cp evil.sh .pi/./extensions/");
     }
 
+    #[test]
+    fn blocks_rm_policy_scripts_directory() {
+        assert_blocks("rm -rf .ironlint/scripts/");
+    }
+
+    #[test]
+    fn blocks_cp_to_policy_scripts_directory() {
+        assert_blocks("cp evil.sh .ironlint/scripts/");
+    }
+
+    #[test]
+    fn blocks_glued_redirect_to_policy_script() {
+        assert_blocks("echo bad >.ironlint/scripts/check.sh");
+    }
+
+    #[test]
+    fn allows_policy_scripts_directory_as_cp_source_and_lookalike_destination() {
+        assert_allows("cp .ironlint/scripts/ /tmp/backup");
+        assert_allows("cp evil.sh .ironlint/scripts-backup/");
+    }
+
     // allow-pins that must stay green under path normalization
     #[test]
     fn allows_profile_dir_content_write_after_normalization() {
@@ -2289,9 +2324,25 @@ mod tests {
     }
 
     #[test]
+    fn blocks_config_add_hooks_path_with_get_value() {
+        assert_blocks("git config --add -- core.hooksPath --get");
+    }
+
+    #[test]
+    fn blocks_config_hooks_path_value_containing_get() {
+        assert_blocks("git config core.hooksPath '/tmp/disabled --get'");
+    }
+
+    #[test]
     fn allows_config_bare_hooks_path_read_still_allows() {
         assert_allows("git config core.hooksPath");
         assert_allows("git config --get core.hooksPath");
+    }
+
+    #[test]
+    fn allows_config_get_hooks_path_with_quoted_space_value_pattern() {
+        assert_allows("git config --get core.hooksPath ' '");
+        assert_allows("git config --get-all core.hooksPath ' '");
     }
 
     #[test]
