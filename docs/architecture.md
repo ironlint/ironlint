@@ -1,10 +1,12 @@
 # Current architecture
 
 IronLint evaluates developer-defined shell checks and returns structured results.
-The `version: 1` core and CLI are implemented. The external acceptance integration
-and completed-edit feedback adapter are still to build. Existing installers and
-adapters use the older write-hook protocol; their presence does not establish v1
-support. See the [remaining work](../plans/2026-09-05-ironlint-v1-implementation.md).
+The `version: 1` core and CLI are implemented. Core release verification uses a
+local Docker feature suite and a deterministic fixture harness. Real harness
+compatibility and hosted acceptance enforcement belong to integration owners.
+Legacy installers and adapters remain pending safe removal. V1 adapter work and
+live qualification proceed independently of the core release. See the
+[remaining work](../plans/2026-09-05-ironlint-v1-implementation.md).
 
 ## Implemented v1 flow
 
@@ -58,20 +60,32 @@ does not enforce trust or perform acceptance. Hashing covers policy bytes and
 managed `.ironlint/scripts/` content; it is not proof that arbitrary transitive
 dependencies are safe. Read-only inspection does not require approval.
 
-## Integration boundary still to build
+## Core feature tests and integration ownership
 
 ```mermaid
 flowchart LR
-    Edit["Completed edit"] -. planned .-> Feedback["Adapter: change feedback, retain edit"]
-    Candidate["Exact candidate revision"] -. planned .-> Trusted["Approved evaluator and policy"]
-    Trusted -. planned .-> Owner["External owner: accept that revision or deny"]
+    Fixture["Fixture files + local Git repo"] --> Driver["Installed test driver"]
+    Driver --> CLI["Real CLI: change / accept"]
+    CLI --> Result["Diagnostics + complete verdict"]
+    Result --> Assert["Feature assertions"]
 ```
 
-The acceptance owner must protect the operation, fix policy/evaluator provenance,
-bind results to the exact candidate, and isolate publication credentials from
-candidate execution. A local pass, a trust hash, or a successful edit hook cannot
-provide that authority. The [v1 contract](../specs/2026-09-05-ironlint-v1-design.md)
-defines the required proof. No live v1 integration is currently claimed.
+[`tests/e2e/features/`](../tests/e2e/features/README.md) builds the real CLI with
+`--locked`, installs a small shell test driver, and runs without runtime network
+access or host mounts. It tests consent, red → repair → green, check selection,
+full acceptance, committed inputs, and evaluation failures. The driver consumes
+[`scripts/verify-acceptance.sh`](../scripts/verify-acceptance.sh) and emits a commit
+ID only after a complete pass. This is a fixture consumer, not a security boundary.
+
+The core owns configuration, command execution, CLI exits, and schema-7 JSON.
+Adapter domains or separate projects own harness installation, event translation,
+and live runtime qualification. No live harness is a core release prerequisite.
+
+An external integration claiming enforced acceptance must still protect its
+operation, bind approved policy/evaluator and results to the candidate, and keep
+publication authority outside candidate execution. Local tests and consent hashes
+do not prove those properties. Such qualification belongs to that integration;
+no live v1 enforcement integration is currently claimed.
 
 ## Existing installation and code awaiting removal
 
@@ -105,5 +119,5 @@ These fixtures describe the existing hook protocol, not completed-edit v1 suppor
 
 Keep each `adapters/<harness>/fixtures/README.md` declaration and capture procedure
 while its suite remains active. Missing provenance or removal of a pending
-declaration can fail the fixture meta-tests. V1 requires one live-verified
-feedback adapter; additional harness captures are not release requirements.
+declaration can fail the fixture meta-tests. Live harness qualification belongs
+to each adapter owner; no harness capture is a core release prerequisite.

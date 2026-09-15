@@ -18,8 +18,9 @@ v1 plan and no historical planning archive. Do not revive removed roadmap items.
 IronLint is a Rust command-check evaluator for AI coding workflows. `version: 1`
 policies use `run`, optional `files`, and `on: [accept]` or `[change, accept]`.
 The versioned core/CLI, schema-7 output, bounded execution, local consent, and
-read-only inspection are implemented. External acceptance and a live-verified
-completed-edit feedback adapter remain open.
+read-only inspection are implemented. Core release verification uses local Docker
+feature E2E tests. Harness compatibility and external enforcement qualification
+belong to adapter/integration owners, not the core release gate.
 
 Unversioned configs, schema-6 verdicts, preview execution, gate-bash, and the old
 installer/adapters still exist in the checkout. **V1 is a breaking release:**
@@ -49,7 +50,7 @@ installation section before editing either.
 - Trust is CLI execution consent, keyed by canonical config path and policy/script
   hash. Keep the core evaluator independent of consent. Read-only inspection never
   requires trust. Consent is not isolation or authority over repository acceptance.
-- The acceptance integration must bind approved policy/evaluator and a complete
+- An integration claiming enforced acceptance must bind approved policy/evaluator and a complete
   result to the exact candidate, with publication authority inaccessible to checks.
 - Config-less `gate-bash` currently returns 0 allow / 2 block; existing adapters
   fail closed on gate errors. Remove owned registrations before deleting this path.
@@ -71,7 +72,8 @@ installation section before editing either.
 - Keep provenance-stamped adapter fixtures and capture-pending declarations intact
   while their suites are active. Run `adapter-drift-audit` when a harness contract
   changes. Existing Codex captures cover pre-write add/update; the other three
-  harnesses remain capture-pending. V1 needs one live-verified feedback adapter.
+  harnesses remain capture-pending. Live harness verification is adapter-owned;
+  the core fixture harness tests only the stable CLI contract.
 
 ```sh
 cargo test --locked
@@ -79,11 +81,13 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all --check
 bash scripts/ci-coverage.sh
 bash scripts/ci-adapters.sh
+bash tests/e2e/features/run.sh
 ```
 
-The adapter script needs isolated `XDG_CONFIG_HOME` when run locally. Full release
-validation also needs the live evidence in the plan; green unit tests cannot prove
-repository enforcement. Publishing requires task authorization.
+The adapter script needs isolated `XDG_CONFIG_HOME` when run locally; retain these
+legacy suites until safe cleanup removes their callers. Core release validation
+requires the local feature suite, not a live harness or hosted repository.
+Fixture tests cannot prove repository enforcement. Publishing requires task authorization.
 
 <!-- graft:start -->
 ## Graft — repo context graph

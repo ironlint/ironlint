@@ -2,16 +2,18 @@
 
 ## Resume here
 
-- **Target:** a breaking v1 release with external acceptance and editable feedback.
-- **Status:** core/CLI implemented; integration, feedback, and removal work remain.
+- **Target:** a breaking v1 core release with deterministic command checks,
+  editable feedback, and local feature E2E coverage.
+- **Status:** core/CLI implemented; local feature suite added; removal work remains.
 - **Verified code baseline:** `459bbadf80e2a81f4fba1fd39a57aa4c65fdda45` on `main`.
 - **Baseline evidence:** 1,048 locked Rust tests; clippy and fmt passed; 94.25%
   aggregate region coverage with every gated file at least 80%; all four adapter
   suites passed. One independent review of that fix batch was resolved. These are
-  code checks, not live v1 acceptance or feedback evidence.
-- **Current task:** P0, select and prove the reference platform/harness contracts.
-- **Access:** platform, harness, versions, and disposable-repository access have
-  not been selected or verified. Do not infer a blocker until inspected.
+  code checks, not hosted enforcement or real harness compatibility evidence.
+- **Current task:** P3, safe owned-install cleanup and legacy removal.
+- **Scope decision (2026-09-14):** the user replaced mandatory hosted-repository
+  and live-harness proof with Docker feature E2E tests. Adapter domains or separate
+  projects own their respective harness evolution and qualification.
 - **Contract:** [v1 specification](../specs/2026-09-05-ironlint-v1-design.md).
 - **Source map:** [current architecture](../docs/architecture.md).
 
@@ -26,76 +28,75 @@ Safe removal of installed IronLint entries remains required. Preserve unrelated
 hooks/settings and user edits; never strand a hook calling a removed executable.
 Use existing installer ownership machinery. No compatibility framework is needed.
 
-Ship one external acceptance integration and one live-verified feedback adapter.
-No new service, broker, daemon, verdict cache, scheduler, or extra harness is in
-scope. Freeze expansion of gate-bash, proposal simulation, telemetry, watch, and
-self-update. Remove obsolete docs instead of maintaining historical roadmaps.
+Ship the stable core/CLI with a local feature suite using fixture files and an
+installed deterministic test driver. No hosted repository, model credentials, or
+real AI runtime is needed. This proves CLI behavior and consumer integration;
+it does not prove a tamper-resistant permission boundary or real event delivery.
+
+Harness adapters and external acceptance integrations own their own compatibility
+and deployment claims. They may live in their current domains or separate projects.
+No repository extraction or deletion of existing adapters is part of the feature
+test batch; keep their tests and captures until safe cleanup identifies retained
+callers. Do not make a new harness release a core release prerequisite.
+
+No service, broker, daemon, verdict cache, scheduler, or additional harness is in
+scope. Freeze gate-bash, proposal simulation, telemetry, watch, and self-update
+expansion. Remove obsolete docs instead of maintaining historical roadmaps.
 
 ## Work and dependencies
 
 | ID | Work | Depends on | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| P0 | Select platform/harness and prove available contracts | None | Ready | Not recorded |
-| P1 | External acceptance integration | P0 authority proof | Pending | Not recorded |
-| P2 | Completed-edit feedback adapter | P0 harness audit | Pending | Not recorded |
-| P3 | Owned-install cleanup and removal of old execution paths | P1 and P2 proven | Pending | Not recorded |
+| P0 | Select local feature boundary | None | Done | Scope decision above |
+| P1 | Docker feature E2E suite | P0 | Done | Nine feature groups passed; command below |
+| P2 | Separate adapter/integration qualification from core | P0 | Done | Spec §§4, 9, 12; `docs/adapters/README.md` |
+| P3 | Owned-install cleanup and removal of old execution paths | P1 validated | Pending | Not recorded |
 | P4 | Integrated release verification and documentation | P3 | Pending | Not recorded |
 
-P1 and P2 can proceed independently after their P0 prerequisites are satisfied.
-P3 inventory can happen earlier; installed blocking paths are removed only with a
-tested cleanup procedure and truthful capability documentation.
+P3 inventory can happen immediately; installed paths are removed only with a
+tested cleanup procedure and truthful capability documentation. No live harness
+or remote repository access blocks this work.
 
-### P0: next executable packet
+### P0: local reference setup
 
-**Read:** spec §§4, 9, 14; existing CI in `.github/workflows/`; adapter registry and
-selected `adapters/<harness>/` sources. Use graph tools to locate exact callers.
+Use the existing Docker E2E pattern: build the Linux CLI from this checkout with
+`Cargo.lock` and `--locked`; install a small shell test driver; run as an
+unprivileged user with fresh home/config, policy, fixture files, and a local Git
+repository. Disable runtime networking and mount no host home or Docker socket.
 
-1. Inspect available platform/harness access without changing repository settings.
-2. Choose one actual repository platform and one feedback harness from accessible
-   evidence. Audit the harness using `adapter-drift-audit`; use current primary
-   documentation for external contracts. Do not invent events or workflow syntax.
-3. Record the protected operation, every route to it, revision binding, policy
-   authority, evaluator provenance, and isolation of candidate execution from
-   result publication. Prefer native platform features; do not build a broker.
-4. Prepare a disposable-repository proof using simple pass/fail commands. Attempt
-   failing acceptance, policy/evaluator replacement, forged success, stale success
-   after another revision, and an alternative route to the protected operation.
-   Test changed merge inputs if the chosen boundary accepts merged state.
-5. Capture a real completed-operation event and its diagnostic delivery behavior.
-   Existing pre-write captures do not establish completed-edit support.
+Use deterministic text and shell-syntax checks. Invoke the actual CLI, consent
+flow, JSON result, and acceptance consumer. Stub only broken-evaluator cases.
+Keep detailed evaluator edge cases in the fast Rust suites.
 
-**Done:** selected versions, setup, exact commands, denied operation/revision,
-and evidence location are recorded below. A mock does not prove enforcement.
-If access is unavailable, prepare the concrete setup first, record the missing
-capability, and request only the access needed. Continue independent work.
+**Done:** `tests/e2e/features/README.md` names setup, run command, ownership, and
+limits. The fixture driver's acceptance result identifies a detached commit checkout
+after a complete pass. It is test machinery, not a production promotion service.
 
-**P0 decisions/evidence:** not yet recorded.
+### P1: feature E2E suite
 
-### P1: external acceptance
+**Read:** spec §§5–8, 11, 14; existing CLI tests and `tests/e2e/features/`.
 
-Use the existing CLI and approved policy/evaluator against an exact materialized
-candidate. Build the smallest consumer requiring exit 0, schema 7, `event: accept`,
-complete `pass`, no error/unrun checks, and the expected required check-ID set.
-Keep publication credentials outside candidate process/environment/filesystem
-access. Bind success through the platform's native revision mechanism.
+Exercise consent, red → feedback → repair → green, known/unknown paths, batches,
+full acceptance after a write without feedback, committed candidate inputs,
+policy selection/drift, missing executables, timeout/unrun results, and malformed
+JSON. Reuse `scripts/verify-acceptance.sh` for complete-result consumption.
 
-**Done:** repeat P0 denial tests using IronLint, including missing evaluator,
-malformed JSON, execution error, and changed merge inputs where supported. Record
-the actual protected operation and revision denied, not just a local exit code.
-Document installation, policy updates, privileges, and supported boundaries.
+**Done:** `bash tests/e2e/features/run.sh` passes and runs as the `features` CI job.
+The suite fails on mismatched exits, diagnostics, selected checks, or accepted
+commit. Containers and run-specific image tags are cleaned; no live installs or
+provider calls occur. Record actual validation below before closing P1.
 
-### P2: feedback adapter
+### P2: adapter and integration ownership
 
-Own only the selected adapter and its contract tests. Translate a completed edit
-or batch to `change`, including deletions and rename endpoints. Unknown paths run
-all change checks. Report failures/errors and a reproduction command while keeping
-edits. Suppress routine successes. Run synchronously within the configured budget;
-label results superseded if newer edits are observed. No proposal reconstruction
-or `gate-bash` call in the new path.
+Core owns config, events, exits, JSON, and bounded command execution. Adapter
+owners translate real events to `change`, deliver diagnostics, and test their
+runtime versions independently. Optional pinned-harness smoke tests belong there.
+Preserve existing capture provenance and capture-pending declarations.
 
-**Done:** provenance-stamped live payloads and visible red → repair → green proof,
-bulk edit, missing executable, and unsupported mutation subsequently rejected by
-full acceptance. Publish tested events, delivery channel, and coverage limits.
+An integration advertising enforced acceptance still qualifies spec §4 against
+its actual permissions, candidate binding, approved evaluator/policy, and result
+publication. The core Docker suite cannot replace that qualification and does
+not claim to. Neither qualification is a core release gate.
 
 ### P3: remove obsolete execution and installation paths
 
@@ -107,8 +108,9 @@ Test chained/user-edited hooks and a repeated cleanup in a temporary home/repo.
 Delete the Bash-gate crate/command, unversioned dispatch, schema-6 result consumers,
 preview stdin/per-file ABI, `extends`/`steps`/suppression execution, unused diff
 selection, and default floor installation when no retained caller needs them.
-Update `init` to create v1 config and install only proven support. Unsupported
-adapters must not keep registrations calling deleted commands.
+Update `init` to create v1 config. Keep harness installation and qualification
+adapter-owned; do not promise automatic live support. Unsupported adapters must
+not keep registrations calling deleted commands.
 
 Retain useful validation, scope matching, execution, consent, and diagnostics.
 Choose the smallest treatment of telemetry/watch: retain only if meaningful for
@@ -123,34 +125,45 @@ unavoidable local enforcement. No automatic conversion or rollback is required.
 
 ### P4: release evidence
 
-Record each result with the tested commit, platform/harness version, exact command
-or procedure, expected/actual result, and a small fixture/artifact link. Store live
-adapter payloads in the selected adapter's existing fixtures directory. Use one
-`tests/evidence/v1/README.md` only when actual external proof exists; no empty
-evidence scaffolding. Keep the evidence index here current.
+Record the tested commit or working-tree scope, toolchain/container setup, exact
+command, and result here. Keep detailed logs in CI output, not a second planning
+archive. Adapter captures stay in adapter-owned fixture directories.
 
 | Required proof | Owner | Current evidence |
 | --- | --- | --- |
-| Editable red state, visible feedback, red denied and green accepted | P1/P2 | Missing live proof |
-| Nonzero command and missing/broken evaluator deny acceptance | P1 | Core tests only |
-| Stale revision, partial-staging mismatch, changed merge inputs denied | P1 | Missing platform proof |
-| Candidate cannot replace policy/evaluator or forge accepted results | P1 | Missing platform proof |
-| Unsupported write is caught by full acceptance | P1/P2 | Missing live proof |
-| Batch runs once per selected check; acceptance includes every check | P2/P4 | Core tests; live batch proof pending |
+| Editable red state, visible diagnostics, fixture rejects red and accepts green | P1 | Local Docker E2E passed |
+| Nonzero command and missing/broken evaluator deny fixture acceptance | P1 | Local Docker E2E passed |
+| Committed candidate differs from unstaged/staged repairs; new commits re-evaluated | P1 | Local Docker E2E passed |
+| Explicit policy selection and renewed consent after policy change | P1 | Local Docker E2E passed |
+| Write without feedback is caught by full acceptance | P1 | Local Docker E2E passed |
+| Batch runs once per selected check; acceptance includes every check | P1/P4 | Core tests; local Docker E2E passed |
 | Output caps, total deadline, pipe-holding descendant cleanup | P4 | Baseline core tests; rerun on release tree |
 | Owned-entry removal preserves unrelated hooks and leaves no dead calls | P3 | Cleanup proof pending |
 
+**Local feature evidence (2026-09-14):** working tree based on
+`fc3936eee4da9d9becd31e485b82bac01edb3000`; `bash tests/e2e/features/run.sh`
+passed all nine feature groups using Docker 29.4.0, Rust 1.88 Bookworm build,
+Debian Bookworm runtime, and the installed fixture driver. No real AI harness or
+hosted repository was used. `bash scripts/test-verify-acceptance.sh` and shell
+syntax checks passed. Independent review found archive export omission and
+multiple-JSON false-accept cases; both were reproduced with failing regressions
+and fixed with detached checkout and a single-document verifier. The full Docker
+suite passed again. Full Rust release validation remains P4 after P3 removal.
+
 Run `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`,
 `cargo fmt --all --check`, `bash scripts/ci-coverage.sh`, and
-`bash scripts/ci-adapters.sh` against the integrated tree. Use a temporary
+`bash scripts/ci-adapters.sh` while legacy suites are active, and
+`bash tests/e2e/features/run.sh` against the integrated tree. Use a temporary
 `XDG_CONFIG_HOME` for adapter tests; never exercise install/trust tests against the
 developer's live configuration. Keep per-file region coverage at least 80%.
 
 Request one separate review of each integrated implementation batch. Reopen a
 resolved batch only for a newly reproducible regression. Final review covers
-authority bypass, schema consumers, installation cleanup, and doc/code agreement.
+schema consumers, fixture scope, installation cleanup, and doc/code agreement.
 Publishing is a separate action requiring authorization; do not infer it from a
-green test suite. Do not declare v1 complete while live proof is missing.
+green test suite. Do not declare v1 complete before local feature tests and
+owned-install cleanup pass. Hosted enforcement and live harness proof are separate
+integration-owned claims.
 
 ## Execution discipline
 

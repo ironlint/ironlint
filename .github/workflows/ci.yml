@@ -23,6 +23,17 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
+  features:
+    name: local feature E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - name: Real CLI and fixture harness in Docker
+        run: bash tests/e2e/features/run.sh
+
   rust:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

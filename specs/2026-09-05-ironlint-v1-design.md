@@ -1,8 +1,9 @@
-# IronLint v1.0 — deterministic acceptance gates
+# IronLint v1.0 — deterministic command checks
 
 **Updated:** 2026-09-14
 **Status:** Current v1 release contract. Core/CLI evaluation is implemented;
-external acceptance, live feedback, and installation/code cleanup remain open.
+local feature end-to-end tests and installation/code cleanup complete the core
+release. Harness compatibility and hosted enforcement belong to integrations.
 **Scope:** A breaking release. No legacy config execution, schema-6 compatibility,
 automatic conversion, migration-report command, or coordinated rollback is required.
 **Implementation:** [current architecture](../docs/architecture.md).
@@ -10,7 +11,7 @@ automatic conversion, migration-report command, or coordinated rollback is requi
 
 ## 1. Product decision
 
-IronLint is a deterministic acceptance gate for AI-authored changes.
+IronLint is a deterministic command-check evaluator for AI-authored changes.
 
 An agent may create incomplete, failing intermediate states in its working
 workspace. It may not promote a change through an enforced acceptance boundary
@@ -29,10 +30,15 @@ The product promise is conditional on a concrete integration:
 IronLint owns evaluation. The integration owns the operation that evaluation
 authorizes. Neither component alone supplies the end-to-end guarantee.
 
-The v1 reference acceptance boundary is repository acceptance of an exact
-revision through a required CI result. Local adapters provide early feedback.
-A harness may also provide an enforced local boundary if it meets section 4.
-No current harness is presumed to meet that contract.
+The core release is verified with a disposable Docker environment, fixture files,
+the real CLI, and a deterministic test harness. No hosted repository or live AI
+harness is required. The fixture exercises feedback and acceptance consumption;
+it does not establish an independent security boundary.
+
+Adapters own harness installation, event translation, and runtime qualification
+in their respective domains or separate projects. External acceptance integrations
+own repository permissions and enforcement claims under section 4. Neither is a
+mandatory dependency of the core release.
 
 ## 2. Goals and non-goals
 
@@ -46,6 +52,7 @@ No current harness is presumed to meet that contract.
 - Distinguish a violation from inability to evaluate, while denying acceptance
   in both cases.
 - Keep one executable, a small configuration model, and thin integrations.
+- Test core features without model credentials or a live harness version matrix.
 
 ### Non-goals
 
@@ -58,6 +65,8 @@ No current harness is presumed to meet that contract.
 - Certify that the configured checks exhaustively express developer intent.
 - Block writes by default or implement universal proposal simulation.
 - Automatically fix, roll back, stash, stage, or restore user files.
+- Maintain every harness's evolving events, installation, or release cadence.
+- Require a hosted repository enforcement demonstration for a core release.
 
 If a deployment requires prohibited content never to enter a protected
 workspace, its harness must isolate candidate edits and control application to
@@ -122,7 +131,7 @@ An integration that does not meet all six requirements must describe itself as
 feedback or a local convenience gate. This is a capability distinction, not a
 user-selectable switch that manufactures stronger permissions.
 
-### Reference CI integration
+### Optional external CI integration
 
 - A trusted job selects the required policy and evaluator independently of
   unreviewed candidate modifications.
@@ -135,8 +144,9 @@ user-selectable switch that manufactures stronger permissions.
 - If acceptance concerns a merged result, evaluate that result; a check of the
   feature branch alone does not establish properties of the merge.
 
-The implementation must document the exact supported repository setup and test
-its denial paths. Merely running IronLint somewhere in CI is insufficient.
+An integration advertising enforcement must document its exact supported setup
+and test its denial paths. Merely running IronLint somewhere in CI is insufficient.
+These are integration-owned qualification requirements, not core release gates.
 
 ## 5. Core abstraction
 
@@ -323,11 +333,13 @@ configured invocation budget. If the adapter observes a newer edit while a
 check runs, label the earlier result superseded. Feedback carries no snapshot
 guarantee in a concurrently edited workspace.
 
-Each adapter publishes a tested capability record: harness version, observed
+Each adapter owner publishes a tested capability record: harness version, observed
 events/tools, feedback delivery mechanism, unsupported paths, and whether it
 controls any acceptance operation. Synthetic tests alone cannot establish
 live support. Preserve provenance-stamped captures and explicit capture-pending
-status for integrations not yet verified.
+status for integrations not yet verified. Such captures are adapter-owned evidence;
+they do not block the core release. The core feature suite invokes the CLI through
+a small test driver and makes no claim about a real harness's event delivery.
 
 Missing events mean missing early feedback. A fresh full acceptance evaluation
 provides the required final check; adapters must not infer acceptance from a
@@ -380,8 +392,10 @@ Remove legacy features from the v1 execution path rather than layering another
 policy engine over them.
 
 Do not build a local promotion service to make the first release possible.
-Ship one tested external acceptance integration and one tested feedback adapter.
-Additional harnesses may remain explicitly feedback-only or capture-pending.
+Ship the stable CLI contract with local feature E2E tests. Keep harness-specific
+code and live qualification in adapter-owned domains or separate projects.
+Existing adapters and captures remain until safe installation cleanup; moving
+ownership does not justify leaving registrations that invoke deleted commands.
 
 ## 13. Breaking release and removal
 
@@ -399,9 +413,10 @@ cleanup instruction; never delete an entire settings file. Exercise cleanup in a
 temporary home/repository, including chained hooks and a repeated invocation.
 This prevents stranded installations without preserving old execution semantics.
 
-Finish and prove the external acceptance integration and one feedback adapter
-before presenting the new installation as complete. Unsupported adapters must
-be clearly identified and have no active registrations calling deleted commands.
+Prove the core installation and feature flows before presenting them as complete.
+Do not imply a harness is supported merely because its fixture files install.
+Unsupported adapters must be clearly identified and have no active registrations
+calling deleted commands.
 `init`, generated authoring instructions, CLI help, examples, and current guidance
 must describe the implemented v1 behavior when the release ships.
 
@@ -412,20 +427,23 @@ and design documents instead of maintaining a historical documentation tree.
 
 ## 14. Release acceptance tests
 
-The following are release gates, not optional demonstrations:
+The following are core release gates. Exercise user-visible feature flows in a
+disposable Docker container with the real CLI and an installed deterministic
+fixture harness; retain fast Rust tests for detailed evaluator edge cases.
 
 1. **TDD:** Write a failing test, receive feedback, edit the implementation, and
-   pass. The red state remains editable; acceptance during red is denied.
-2. **Violation:** A required command exits nonzero; the protected acceptance
-   operation does not occur, even if the agent requests it directly.
+   pass. The red state remains editable; the fixture consumer refuses red.
+2. **Violation:** A required command exits nonzero; evaluation fails and the
+   fixture consumer emits no accepted candidate.
 3. **Broken evaluator:** Missing executable, timeout, signal, invalid config,
    untrusted local policy, and malformed JSON cannot authorize acceptance.
-4. **Wrong candidate:** Change the candidate after validation; the old result
-   cannot authorize it. Cover partial staging and changed merge inputs in the
-   reference integration's supported boundary.
-5. **Policy bypass:** Candidate changes to config, scripts, hook files, or
-   apparent check results cannot weaken the external acceptance requirement.
-6. **Unsupported write:** A mutation outside the feedback adapter's coverage
+4. **Candidate inputs:** The fixture checks out a commit before evaluation;
+   working-tree or staged repairs do not stand in for that commit. A new commit
+   gets a fresh evaluation, with no reusable local success token.
+5. **Selected policy:** Candidate config does not replace an explicitly selected
+   external policy. Changed approved policy requires renewed execution consent.
+   These assertions do not claim malicious-code isolation or unforgeable results.
+6. **Unsupported write:** A mutation outside the fixture's feedback calls
    still fails the subsequent full acceptance check when it violates policy.
 7. **Bulk edit:** A batch touching many matching files runs each check once.
 8. **Selection:** Indirect changes, deletions, and nonmatching paths never omit
@@ -436,15 +454,19 @@ The following are release gates, not optional demonstrations:
     not strand a legacy fail-closed adapter calling a missing command.
 
 Core changes retain the repository's regression-test, separate code-review,
-clippy, and per-file region-coverage requirements. Adapter claims require live
-contract evidence. A failed enforcement test blocks an enforcement claim, not
-merely a documentation checkbox.
+clippy, and per-file region-coverage requirements. Adapter owners test actual
+runtime compatibility separately. Integration owners claiming enforced acceptance
+must additionally test section 4, including alternate routes, policy/evaluator
+replacement, forged results, and changed merge inputs for their supported setup.
+A local fixture pass is not evidence for those external enforcement claims.
 
 ## 15. Success and stop condition
 
-The release succeeds when an agent can perform a normal TDD/refactoring session
-without gate-induced edit deadlocks, while a failing or unevaluable candidate
-cannot cross the tested acceptance boundary regardless of the agent's response.
+The core release succeeds when the tested CLI supports edit → feedback → repair
+and complete acceptance evaluation, reports failures and inability to evaluate
+reliably, and leaves edits repairable. Its fixture consumer accepts only complete
+passes. Real harness behavior and tamper-resistant deployment guarantees are
+qualified by their integration owners, outside the core release gate.
 
 Measure correction time, feedback interruption cost, and enforcement failures.
 Blocked-write count is not a success metric.
