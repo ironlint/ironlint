@@ -14,70 +14,24 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the pipeline against a file, a diff, or — with neither — sweep the repo.
+    /// Evaluate the v1 policy. Acceptance runs every check; change may filter by file.
     Check {
         #[arg(long = "file", action = clap::ArgAction::Append)]
         file: Vec<PathBuf>,
-        #[arg(long)]
-        diff: Option<PathBuf>,
-        /// Evaluate this proposed post-edit content instead of reading
-        /// `--file` from disk. Pass `-` to read the bytes from stdin
-        /// (recommended for any content larger than a few KB; argv has
-        /// OS-level size limits).
-        #[arg(
-            long,
-            value_name = "STRING_OR_DASH",
-            requires = "file",
-            conflicts_with = "diff"
-        )]
-        content: Option<String>,
         #[arg(long, default_value = "human")]
         format: OutputFormat,
         #[arg(long, default_value = ".ironlint.yml")]
         config: PathBuf,
-        /// Evaluate only this check id. Repeatable; multiple flags OR'd.
-        #[arg(long = "check", action = clap::ArgAction::Append)]
-        checks: Vec<String>,
-        /// What triggered this check, surfaced to checks as $IRONLINT_EVENT.
-        /// Defaults to `write` for `--file`/`--diff`. Not valid with a bare
-        /// repo-wide sweep, which derives each check's lifecycle from its
-        /// `on:` list. Restricted to the two ABI values; an unknown value is
-        /// rejected at the arg layer so typos never reach `$IRONLINT_EVENT`.
+        /// Evaluation event. Defaults to acceptance.
         #[arg(
             long,
-            value_parser = clap::builder::PossibleValuesParser::new([
-                "write",
-                "pre-commit",
-                "change",
-                "accept",
-            ])
+            value_parser = clap::builder::PossibleValuesParser::new(["change", "accept"])
         )]
         event: Option<String>,
         /// Root of the tree evaluated by a v1 policy. Relative --file paths
         /// resolve under this directory.
         #[arg(long)]
         root: Option<PathBuf>,
-        /// After the verdict, print a per-gate outcome report to stderr.
-        /// Rows cover per-file (write-lifecycle) checks; batched pre-commit
-        /// checks emit no rows.
-        #[arg(long)]
-        explain: bool,
-        /// Allow checking files whose canonical path falls outside the
-        /// directory containing the config file. Disabled by default to
-        /// prevent wrappers from inadvertently running policy against
-        /// arbitrary host files.
-        #[arg(long, default_value_t = false)]
-        allow_external_paths: bool,
-        /// Run the named `--check` id(s) against `--file` even if the path is
-        /// outside their `files` glob. Scope-only; requires `--check`.
-        #[arg(long, default_value_t = false)]
-        force: bool,
-        /// Exit nonzero when no checks matched the file. Without this, a
-        /// glob typo that matches nothing prints a visible `pass (no checks
-        /// matched ...)` note but still exits 0 — fine for local use. In CI,
-        /// pass `--require-match` so a silent policy bypass fails the build.
-        #[arg(long, default_value_t = false)]
-        require_match: bool,
     },
     /// Bless this config + its `.ironlint/scripts/` scripts in the out-of-repo trust store.
     Trust {
@@ -115,9 +69,9 @@ pub enum Command {
         /// Remove ironlint hooks and materialized artifacts.
         #[arg(long)]
         uninstall: bool,
-        /// Do not install/remove the git pre-commit floor hook.
+        /// Install/remove the optional local git pre-commit hook.
         #[arg(long)]
-        no_git_hook: bool,
+        git_hook: bool,
         /// Print intended changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -136,7 +90,7 @@ pub enum Command {
     },
     /// Show which checks apply to `<file>` and their run commands.
     ///
-    /// Read-only — no check runs, no telemetry is written.
+    /// Read-only — no check runs.
     Explain {
         /// Path to inspect. Relative to cwd.
         file: PathBuf,
@@ -149,7 +103,7 @@ pub enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// Print the post-extends merged check set.
+    /// Print the configured check set.
     ///
     /// Read-only. Does not run any check. Default format prints each check
     /// with its files glob(s) and run command, annotated by origin.
@@ -172,17 +126,6 @@ pub enum Command {
     /// builds) and so can't self-update, in which case it prints the
     /// channel-specific command that will.
     Update,
-    /// Live TUI over the telemetry log: a stream of check runs and a per-check
-    /// explorer. Read-only; requires an interactive terminal.
-    Watch {
-        /// Directory containing `.ironlint.yml` / `.ironlint/log.jsonl`. Defaults to cwd.
-        #[arg(long, default_value = ".")]
-        dir: PathBuf,
-    },
-    /// Decide whether a Bash command may run. Reads the command on stdin.
-    /// Exit 0 = allow (empty stdout); exit 2 = block (reason on stdout).
-    /// Not a check, not trust-gated; works with no .ironlint.yml present.
-    GateBash,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

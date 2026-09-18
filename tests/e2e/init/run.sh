@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-#
-# Opt-in onboarding feature test for `ironlint init`.
-#
-# Builds a Linux `ironlint` in Docker, runs a bare `ironlint init --yes` in a clean
-# container against seeded harness homes, and asserts the materialized hook
-# artifacts + settings patches appear in the gitignored, bind-mounted output
-# dirs. Targets the open-source, no-auth harnesses only (codex, pi, opencode);
-# claude-code is excluded by not seeding ~/.claude.
-#
-# Usage:   bash tests/e2e/init/run.sh
-# Requires Docker. NOT part of `cargo test` and NOT run in PR CI — the first
-# build compiles ironlint inside the image (slow); later runs cache.
+# Opt-in clean-room test for v1 init, consent, and Pi onboarding.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,13 +18,10 @@ fi
 mkdir -p "$HOME_DIR" "$PROJ_DIR"
 echo "run dir: $OUT"
 
-echo "== building image (compiles a linux ironlint; first run is slow) =="
+echo "== building image =="
 docker build -f "$HERE/Dockerfile" -t "$IMAGE" "$REPO_ROOT"
 
 echo "== running container =="
-# Run as the host UID/GID so writes to the bind-mounted dirs are owned correctly
-# on native Linux Docker (where the image's baked-in uid 1000 may not match the
-# host user). $HOME is bind-mounted, so the container needs no real home dir.
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -v "$HOME_DIR:/home/tester" \
@@ -44,85 +30,34 @@ docker run --rm \
   -w /work \
   "$IMAGE" | tee "$OUT/container.log"
 
-# ---------- host-side assertions (portable: test + grep, no jq) ----------
 fail=0
 pass() { printf '  ok   %s\n' "$1"; }
 miss() { printf '  FAIL %s\n' "$1"; fail=1; }
 exists() { if [ -e "$1" ]; then pass "$2"; else miss "$2 -> missing: $1"; fi; }
-executable() { if [ -x "$1" ]; then pass "$2"; else miss "$2 -> not executable: $1"; fi; }
-# Fixed-string grep so regex metachars in the needle (e.g. the '.' in a path)
-# can't widen the match.
 contains() {
   if [ -f "$1" ] && grep -qF -- "$2" "$1"; then pass "$3"; else miss "$3 -> grep '$2' in $1"; fi
 }
 
 echo "== assertions =="
+exists "$PROJ_DIR/.pi/extensions/ironlint.ts" "Pi extension installed"
+exists "$PROJ_DIR/.pi/extensions/.ironlint-adapter.json" "Pi extension ownership record"
+exists "$PROJ_DIR/.pi/skills/ironlint-config/SKILL.md" "Pi authoring skill installed"
+exists "$PROJ_DIR/.pi/skills/ironlint-config/.ironlint-adapter.json" "Pi skill ownership record"
 
-# codex: project-local hooks.json patch (a bare `init --yes` is Scope::Local,
-# and unlike the removed Reasonix adapter, codex is not forced user-global —
-# it respects --global exactly like claude-code) + materialized hook under the
-# ironlint dir.
-exists "$PROJ_DIR/.codex/hooks.json" "codex hooks.json present"
-contains "$PROJ_DIR/.codex/hooks.json" "PreToolUse" "codex PreToolUse entry"
-contains "$PROJ_DIR/.codex/hooks.json" "adapters/codex/hook.sh" "codex hook command path"
-contains "$PROJ_DIR/.codex/hooks.json" "pre-tool-use" "codex entry arg"
-exists "$HOME_DIR/.config/ironlint/adapters/codex/hook.sh" "codex hook.sh materialized"
-executable "$HOME_DIR/.config/ironlint/adapters/codex/hook.sh" "codex hook.sh is executable"
-exists "$HOME_DIR/.config/ironlint/adapters/codex/.ironlint-adapter.json" "codex sidecar present"
-contains "$HOME_DIR/.config/ironlint/adapters/codex/.ironlint-adapter.json" "sha256:" "codex sidecar has sha256"
+exists "$PROJ_DIR/.ironlint.yml" "v1 policy scaffolded"
+contains "$PROJ_DIR/.ironlint.yml" "version: 1" "scaffolded policy is v1"
+exists "$HOME_DIR/.config/ironlint/trust.json" "local consent recorded"
 
-# pi: project-local plugin drop-in.
-exists "$PROJ_DIR/.pi/extensions/ironlint.ts" "pi plugin ironlint.ts"
-exists "$PROJ_DIR/.pi/extensions/.ironlint-adapter.json" "pi sidecar present"
+exists "$PROJ_DIR/acceptance.json" "acceptance verdict captured"
+contains "$PROJ_DIR/acceptance.json" '"schema": 7' "acceptance uses schema 7"
+contains "$PROJ_DIR/acceptance.json" '"status": "pass"' "starter policy passes"
 
-# opencode: project-local plugin drop-in.
-exists "$PROJ_DIR/.opencode/plugins/ironlint.ts" "opencode plugin ironlint.ts"
-exists "$PROJ_DIR/.opencode/plugins/.ironlint-adapter.json" "opencode sidecar present"
-
-# Authoring skill: ironlint init installs ironlint-config/SKILL.md into each wired
-# agent's skills dir (project-local; claude-code excluded so opencode is not
-# deduped here).
-exists "$PROJ_DIR/.codex/skills/ironlint-config/SKILL.md" "codex authoring skill"
-exists "$PROJ_DIR/.pi/skills/ironlint-config/SKILL.md" "pi authoring skill"
-exists "$PROJ_DIR/.opencode/skills/ironlint-config/SKILL.md" "opencode authoring skill"
-contains "$PROJ_DIR/.pi/skills/ironlint-config/SKILL.md" "name: ironlint-config" "pi skill has frontmatter"
-exists "$PROJ_DIR/.pi/skills/ironlint-config/.ironlint-adapter.json" "pi skill sidecar"
-
-# init itself: scaffolded + blessed config.
-exists "$PROJ_DIR/.ironlint.yml" "scaffolded .ironlint.yml"
-exists "$HOME_DIR/.config/ironlint/trust.json" "blessed trust.json"
-
-# claude-code must NOT have been installed (no ~/.claude was seeded).
-if [ -e "$HOME_DIR/.config/ironlint/adapters/claude-code" ]; then
-  miss "claude-code must be excluded (open-source-only) but an artifact exists"
-else
-  pass "claude-code excluded (no artifact)"
-fi
-
-# doctor exited cleanly and reports each harness as a *passing* adapter row.
-DOCTOR="$PROJ_DIR/doctor.json"
-exists "$DOCTOR" "doctor.json captured"
-DEXIT="$(cat "$PROJ_DIR/doctor.exit" 2>/dev/null || echo missing)"
-if [ "$DEXIT" = "0" ]; then
-  pass "doctor exited 0"
-else
-  miss "doctor exited '$DEXIT'"
-  [ -s "$PROJ_DIR/doctor.err" ] && { echo "  --- doctor stderr ---"; sed 's/^/  /' "$PROJ_DIR/doctor.err"; }
-fi
-# The "status" line immediately follows the "name" line in serde's pretty JSON,
-# so grep -A1 asserts per-harness pass without needing jq.
-status_pass() {
-  if grep -A1 "\"name\": \"$1\"" "$DOCTOR" 2>/dev/null | grep -qF '"status": "pass"'; then
-    pass "doctor: $1 status pass"
-  else
-    miss "doctor: $1 status not pass"
-  fi
-}
-for h in codex pi opencode; do status_pass "$h"; done
+exists "$PROJ_DIR/doctor.json" "doctor report captured"
+contains "$PROJ_DIR/doctor.json" '"name": "pi"' "doctor reports Pi"
 
 echo
 if [ "$fail" -eq 0 ]; then
-  echo "PASS — all onboarding assertions held ($OUT)"
+  echo "PASS — v1 init and Pi onboarding assertions held ($OUT)"
 else
   echo "FAIL — see failures above; forensics in $OUT"
 fi

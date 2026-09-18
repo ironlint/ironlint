@@ -1,51 +1,41 @@
-use super::super::adapters::{
-    adapter_check, build_hook_deps_result, check_adapters, hook_deps_row, hook_deps_verdict,
-    hooks_row, json_hook_adapter_wired,
-};
+use super::super::adapters::{adapter_check, check_adapters, hooks_row};
 use super::super::{CheckResult, Status};
 use super::adapter_env;
 use ironlint_core::adapter::{all_harnesses, install, HarnessStatus, Scope};
 use tempfile::tempdir;
 
 #[test]
-fn check_adapters_reports_installed_codex_as_pass() {
+fn check_adapters_reports_installed_pi_as_pass() {
     let tmp = tempdir().unwrap();
     let env = adapter_env(tmp.path());
     let h = all_harnesses()
         .into_iter()
-        .find(|h| h.name == "codex")
+        .find(|h| h.name == "pi")
         .unwrap();
-    // check_adapters reads status at Scope::Local; codex (unlike the prior global-only harness)
-    // has a real project-local settings file, so install must match scope.
     install(&h, &env, Scope::Local).unwrap();
     let checks = check_adapters(&env);
-    let r = checks
-        .iter()
-        .find(|c| c.name == "codex")
-        .expect("codex reported");
+    let r = checks.iter().find(|c| c.name == "pi").expect("pi reported");
     assert_eq!(r.status, Status::Pass);
     assert!(r.detail.contains("installed"));
 }
 
 #[test]
-fn check_adapters_reports_broken_adapter_as_fail() {
+fn check_adapters_reports_modified_pi_as_warn() {
     let tmp = tempdir().unwrap();
     let env = adapter_env(tmp.path());
     let h = all_harnesses()
         .into_iter()
-        .find(|h| h.name == "codex")
+        .find(|h| h.name == "pi")
         .unwrap();
-    // check_adapters reads status at Scope::Local; codex (unlike the prior global-only harness)
-    // has a real project-local settings file, so install must match scope.
     install(&h, &env, Scope::Local).unwrap();
-    // Delete the materialized artifact dir but leave the settings entry → broken.
-    std::fs::remove_dir_all(env.config_home.join("ironlint/adapters/codex")).unwrap();
+    std::fs::write(
+        env.project_root.join(".pi/extensions/ironlint.ts"),
+        "// modified",
+    )
+    .unwrap();
     let checks = check_adapters(&env);
-    let r = checks
-        .iter()
-        .find(|c| c.name == "codex")
-        .expect("codex reported");
-    assert_eq!(r.status, Status::Fail);
+    let r = checks.iter().find(|c| c.name == "pi").expect("pi reported");
+    assert_eq!(r.status, Status::Warn);
 }
 
 fn harness_status(detected: bool, installed: bool, registered: bool) -> HarnessStatus {
@@ -175,115 +165,4 @@ fn hooks_row_counts_only_wired_pass_rows() {
         "detail must count only wired rows: {}",
         r.detail
     );
-}
-
-// --- Task 5.23 Part 2: hook-dependency (jq/python3) probe -------------
-
-#[test]
-fn hook_deps_omitted_when_no_json_hook_adapter() {
-    // No JSON-hook adapter wired → jq/python3 irrelevant → no row at all,
-    // regardless of what happens to be on PATH.
-    assert!(hook_deps_verdict(false, true, true).is_none());
-    assert!(hook_deps_verdict(false, false, false).is_none());
-}
-
-#[test]
-fn hook_deps_pass_when_both_present() {
-    let (status, missing) = hook_deps_verdict(true, true, true).expect("wired → a row");
-    assert_eq!(status, Status::Pass);
-    assert!(missing.is_empty(), "nothing missing: {missing:?}");
-}
-
-#[test]
-fn hook_deps_fail_names_missing_jq() {
-    let (status, missing) = hook_deps_verdict(true, false, true).expect("wired → a row");
-    assert_eq!(status, Status::Fail);
-    assert_eq!(missing, vec!["jq"]);
-}
-
-#[test]
-fn hook_deps_fail_names_missing_python3() {
-    let (status, missing) = hook_deps_verdict(true, true, false).expect("wired → a row");
-    assert_eq!(status, Status::Fail);
-    assert_eq!(missing, vec!["python3"]);
-}
-
-#[test]
-fn hook_deps_fail_names_both_when_both_missing() {
-    let (status, missing) = hook_deps_verdict(true, false, false).expect("wired → a row");
-    assert_eq!(status, Status::Fail);
-    assert_eq!(missing, vec!["jq", "python3"]);
-}
-
-#[test]
-fn hook_deps_result_fail_has_remediation_naming_missing() {
-    let r = build_hook_deps_result((Status::Fail, vec!["jq"]));
-    assert_eq!(r.name, "hook deps");
-    assert_eq!(r.status, Status::Fail);
-    assert!(
-        r.detail.contains("jq"),
-        "detail names the missing dep: {}",
-        r.detail
-    );
-    let rem = r.remediation.expect("fail row must remediate");
-    assert!(
-        rem.contains("jq"),
-        "remediation names the missing dep: {rem}"
-    );
-    assert!(
-        rem.contains("fails open"),
-        "remediation must explain the fail-open consequence: {rem}"
-    );
-}
-
-#[test]
-fn hook_deps_result_pass_has_no_remediation() {
-    let r = build_hook_deps_result((Status::Pass, vec![]));
-    assert_eq!(r.name, "hook deps");
-    assert_eq!(r.status, Status::Pass);
-    assert!(r.remediation.is_none());
-}
-
-#[test]
-fn json_hook_adapter_wired_false_on_clean_env() {
-    let tmp = tempdir().unwrap();
-    let env = adapter_env(tmp.path());
-    assert!(!json_hook_adapter_wired(&env));
-}
-
-#[test]
-fn json_hook_adapter_wired_true_when_codex_installed() {
-    let tmp = tempdir().unwrap();
-    let env = adapter_env(tmp.path());
-    let h = all_harnesses()
-        .into_iter()
-        .find(|h| h.name == "codex")
-        .unwrap();
-    install(&h, &env, Scope::Local).unwrap();
-    assert!(json_hook_adapter_wired(&env));
-}
-
-#[test]
-fn hook_deps_row_none_when_no_json_hook_adapter() {
-    // A clean env has no wired JSON-hook adapter → no deps row, even though
-    // jq/python3 may be present on the machine running the test.
-    let tmp = tempdir().unwrap();
-    let env = adapter_env(tmp.path());
-    assert!(hook_deps_row(&env).is_none());
-}
-
-#[test]
-fn hook_deps_row_present_when_json_hook_adapter_wired() {
-    // Installing a JSON-hook adapter makes the row fire. The Pass/Fail
-    // status depends on whether the machine has jq/python3, but a row is
-    // ALWAYS produced once wired — that Some/None split is machine-agnostic.
-    let tmp = tempdir().unwrap();
-    let env = adapter_env(tmp.path());
-    let h = all_harnesses()
-        .into_iter()
-        .find(|h| h.name == "codex")
-        .unwrap();
-    install(&h, &env, Scope::Local).unwrap();
-    let r = hook_deps_row(&env).expect("wired adapter → a deps row");
-    assert_eq!(r.name, "hook deps");
 }

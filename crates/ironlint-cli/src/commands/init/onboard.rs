@@ -5,7 +5,7 @@ use super::Options;
 use anyhow::{anyhow, Result};
 use ironlint_core::adapter::{
     all_harnesses, detect, install, install_skill, plan_install, plan_uninstall, uninstall,
-    uninstall_skill, AdapterEnv, Harness, InstallResult, PlanStep, Scope,
+    uninstall_skill, AdapterEnv, Harness, InstallResult, Scope,
 };
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -24,12 +24,8 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
     };
     let mut selected = resolve_harnesses(env, opts)?;
     if selected.is_empty() && !std::io::stdin().is_terminal() {
-        println!(
-            "no supported harnesses detected; run `ironlint init --harness all` to wire all four"
-        );
-        // The git pre-commit floor is not a harness: a scripted
-        // `init --yes` in a harness-less project still gets its floor
-        // (scaffolding-level behavior, not gated on harness confirmation).
+        println!("no supported harness detected; run `ironlint init --harness pi` to wire pi");
+        // The optional git hook is independent of harness selection.
         floor_step(env, opts)?;
         return Ok(0);
     }
@@ -57,21 +53,19 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         println!("  installing: {names}");
     }
     let code = apply(&selected, env, scope, opts);
-    // The git pre-commit floor is not a harness: it installs (or uninstalls)
-    // regardless of what the harness wiring above did, and is the last line
-    // of the summary so its trust notice (W1-R7) reads last.
+    // The optional git hook is independent of harness wiring.
     run_floor(env, opts)?;
     Ok(code)
 }
-/// Dry-run lines for the git floor: what a real run would install/remove.
+/// Dry-run lines for the optional git hook.
 fn print_floor_plan(env: &AdapterEnv, opts: &Options) -> Result<()> {
     if !opts.git_hook {
-        println!("  git floor:    skipped (--no-git-hook)");
+        println!("  git hook:     skipped (not requested)");
         return Ok(());
     }
     match git_hook::hook_path(&env.project_root)? {
         Some(p) => println!(
-            "  git floor:    {} {}",
+            "  git hook:     {} {}",
             if opts.uninstall {
                 "would remove"
             } else {
@@ -79,14 +73,12 @@ fn print_floor_plan(env: &AdapterEnv, opts: &Options) -> Result<()> {
             },
             p.display()
         ),
-        None => println!("  git floor:    skipped (not a git work tree)"),
+        None => println!("  git hook:     skipped (not a git work tree)"),
     }
     Ok(())
 }
 
-/// Floor step for paths that skip the harness confirm gate (dry-run plan
-/// line, or the harness-less non-TTY early return): plan under `--dry-run`,
-/// execute otherwise.
+/// Git-hook step for paths that skip the harness confirmation.
 fn floor_step(env: &AdapterEnv, opts: &Options) -> Result<()> {
     if opts.dry_run {
         print_floor_plan(env, opts)?;
@@ -96,9 +88,7 @@ fn floor_step(env: &AdapterEnv, opts: &Options) -> Result<()> {
     Ok(())
 }
 
-/// Install or remove the floor hook, printing the outcome and (on a fresh
-/// install) the W1-R7 trust reminder: the floor blocks untrusted configs at
-/// the commit boundary, so an unblessed config makes the first commit exit 4.
+/// Install or remove the git hook and print its outcome.
 fn run_floor(env: &AdapterEnv, opts: &Options) -> Result<()> {
     if !opts.git_hook {
         return Ok(());
@@ -110,11 +100,11 @@ fn run_floor(env: &AdapterEnv, opts: &Options) -> Result<()> {
         git_hook::install(&env.project_root, &bin)?
     };
     println!(
-        "  git floor:    {}",
+        "  git hook:     {}",
         git_hook::summarize(&state, opts.uninstall)
     );
     if !opts.uninstall && matches!(state, HookState::Installed(_) | HookState::Updated(_)) {
-        println!("  note: run `ironlint trust` for this config before the first commit — the floor blocks untrusted configs at the commit boundary");
+        println!("  note: the git hook requires a complete trusted acceptance pass");
     }
     Ok(())
 }
@@ -123,21 +113,30 @@ fn run_floor(env: &AdapterEnv, opts: &Options) -> Result<()> {
 /// `--harness` → `requested`; auto-detect → `detected`. No prompting here.
 fn resolve_harnesses(env: &AdapterEnv, opts: &Options) -> Result<Vec<(String, Source)>> {
     if !opts.harnesses.is_empty() {
-        let names = select_harness_names(&opts.harnesses)?;
+        let names = select_harness_names(&opts.harnesses, opts.uninstall)?;
         return Ok(names.into_iter().map(|n| (n, Source::Requested)).collect());
     }
+    let registry = all_harnesses();
     Ok(detect(env)
         .into_iter()
-        .filter(|(_, found)| *found)
+        .filter(|(name, found)| {
+            *found
+                && (opts.uninstall
+                    || registry
+                        .iter()
+                        .find(|h| h.name == *name)
+                        .is_some_and(|h| h.installable))
+        })
         .map(|(n, _)| (n.to_string(), Source::Detected))
         .collect())
 }
 
 /// Build `SelectItem`s from the resolved harness set. Detected harnesses are
 /// pre-checked; undetected harnesses are shown but unchecked.
-fn build_items(selected: &[(String, Source)]) -> Vec<select::SelectItem> {
+fn build_items(selected: &[(String, Source)], uninstalling: bool) -> Vec<select::SelectItem> {
     all_harnesses()
         .iter()
+        .filter(|h| uninstalling || h.installable)
         .map(|h| {
             let is_selected = selected.iter().any(|(n, _)| n == h.name);
             select::SelectItem {
@@ -170,8 +169,7 @@ fn reconcile(chosen: Vec<String>, selected: &[(String, Source)]) -> Vec<(String,
         .collect()
 }
 
-/// Build the render-ready plan, honoring the opencode-skill dedup for install
-/// (opencode reads claude-code's `.claude/skills/` copy).
+/// Build the render-ready plan for the selected harnesses.
 fn build_plans(
     selected: &[(String, Source)],
     env: &AdapterEnv,
@@ -179,19 +177,23 @@ fn build_plans(
     uninstall_mode: bool,
 ) -> Vec<HarnessPlan> {
     let registry = all_harnesses();
-    let names: Vec<String> = selected.iter().map(|(n, _)| n.clone()).collect();
     selected
         .iter()
         .filter_map(|(name, source)| {
             let h = registry.iter().find(|h| h.name == *name)?;
-            let mut steps = if uninstall_mode {
-                plan_uninstall(h, env, scope)
+            let steps = if uninstall_mode {
+                let mut steps = Vec::new();
+                for cleanup_scope in operation_scopes(h, scope, true) {
+                    for step in plan_uninstall(h, env, cleanup_scope) {
+                        if !steps.contains(&step) {
+                            steps.push(step);
+                        }
+                    }
+                }
+                steps
             } else {
                 plan_install(h, env, scope)
             };
-            if !uninstall_mode && !should_install_skill(h.name, &names) {
-                steps.retain(|s| !matches!(s, PlanStep::Skill { .. }));
-            }
             Some(HarnessPlan {
                 name: h.name,
                 source: *source,
@@ -199,6 +201,17 @@ fn build_plans(
             })
         })
         .collect()
+}
+
+/// Cleanup-only adapters may have been installed locally or globally by older
+/// releases. Their v1 uninstall removes owned artifacts from both locations so
+/// a global registration cannot keep calling a deleted command.
+fn operation_scopes(harness: &Harness, requested: Scope, uninstalling: bool) -> Vec<Scope> {
+    if uninstalling && !harness.installable {
+        vec![Scope::Local, Scope::Global]
+    } else {
+        vec![requested]
+    }
 }
 
 /// Decide whether to proceed past the plan. `--yes` and explicit non-TTY
@@ -232,7 +245,7 @@ fn confirm_gate_to<W: Write>(
         return Ok(Proceed::No);
     }
     if opts.harnesses.is_empty() {
-        let chosen = select::prompt_multi_select(build_items(selected))?;
+        let chosen = select::prompt_multi_select(build_items(selected, opts.uninstall))?;
         if chosen.is_empty() {
             writeln!(writer, "no harnesses selected; nothing to do")?;
             return Ok(Proceed::No);
@@ -252,7 +265,9 @@ fn confirm_gate_to<W: Write>(
 }
 
 /// Install or uninstall the resolved set, printing per-harness result lines.
-/// Returns the phase exit code: 3 only if every harness failed.
+/// Returns the phase exit code. Installation reports 3 only when every
+/// selected harness fails; uninstall reports 3 for any failure so a stranded
+/// registration cannot be mistaken for complete cleanup.
 fn apply(selected: &[(String, Source)], env: &AdapterEnv, scope: Scope, opts: &Options) -> i32 {
     let registry = all_harnesses();
     let names: Vec<String> = selected.iter().map(|(n, _)| n.clone()).collect();
@@ -262,35 +277,64 @@ fn apply(selected: &[(String, Source)], env: &AdapterEnv, scope: Scope, opts: &O
         let Some(h) = registry.iter().find(|h| h.name == *name) else {
             continue;
         };
-        let outcome = if opts.uninstall {
-            uninstall(h, env, scope)
-        } else {
-            install(h, env, scope)
-        };
-        match outcome {
-            Ok(o) => {
-                any_ok = true;
-                print_outcome(o.harness, &o.result, o.hint, opts.uninstall);
+        for operation_scope in operation_scopes(h, scope, opts.uninstall) {
+            let label = if opts.uninstall && !h.installable {
+                format!(
+                    "{} ({})",
+                    h.name,
+                    match operation_scope {
+                        Scope::Local => "local",
+                        Scope::Global => "global",
+                    }
+                )
+            } else {
+                h.name.to_string()
+            };
+            let outcome = if opts.uninstall {
+                uninstall(h, env, operation_scope)
+            } else {
+                install(h, env, operation_scope)
+            };
+            match outcome {
+                Ok(o) => {
+                    print_outcome(&label, &o.result, o.hint, opts.uninstall);
+                    let (step_ok, step_fail) = result_flags(&o.result, opts.uninstall);
+                    any_ok |= step_ok;
+                    any_fail |= step_fail;
+                }
+                Err(e) => {
+                    any_fail = true;
+                    println!("  {label:<12} failed: {e:#}");
+                }
             }
-            Err(e) => {
-                any_fail = true;
-                println!("  {:<12} failed: {e:#}", h.name);
-            }
+            let (skill_ok, skill_fail) = run_skill_step(h, env, operation_scope, opts, &label);
+            any_ok |= skill_ok;
+            any_fail |= skill_fail;
         }
-        let (skill_ok, skill_fail) = run_skill_step(h, env, scope, opts, &names);
-        any_ok |= skill_ok;
-        any_fail |= skill_fail;
     }
-    if any_fail && !any_ok {
+    if any_fail && (opts.uninstall || !any_ok) {
         3
     } else {
         0
     }
 }
 
+fn result_flags(result: &InstallResult, uninstalling: bool) -> (bool, bool) {
+    match result {
+        InstallResult::Failed(_) | InstallResult::Skipped(_) if uninstalling => (false, true),
+        InstallResult::Failed(_) => (false, true),
+        _ => (true, false),
+    }
+}
+
 /// Validate explicit `--harness` names; `all` expands to the full registry.
-fn select_harness_names(requested: &[String]) -> Result<Vec<String>> {
-    let known: Vec<&'static str> = all_harnesses().iter().map(|h| h.name).collect();
+fn select_harness_names(requested: &[String], uninstalling: bool) -> Result<Vec<String>> {
+    let registry = all_harnesses();
+    let known: Vec<&'static str> = registry
+        .iter()
+        .filter(|h| uninstalling || h.installable)
+        .map(|h| h.name)
+        .collect();
     let mut out: Vec<String> = Vec::new();
     for r in requested {
         if r == "all" {
@@ -298,7 +342,12 @@ fn select_harness_names(requested: &[String]) -> Result<Vec<String>> {
         }
         if !known.contains(&r.as_str()) {
             return Err(anyhow!(
-                "unknown harness `{r}` (supported: {})",
+                "harness `{r}` is not available for {} (available: {})",
+                if uninstalling {
+                    "cleanup"
+                } else {
+                    "installation"
+                },
                 known.join(", ")
             ));
         }
@@ -337,14 +386,6 @@ fn print_outcome(harness: &str, result: &InstallResult, hint: &str, uninstalling
     }
 }
 
-/// opencode is Claude-compatible and also reads `.claude/skills/`; when
-/// claude-code is in the same install set, skip opencode's own skill write so
-/// opencode doesn't load the same-named skill twice. Dedup applies to install
-/// only.
-fn should_install_skill(name: &str, selected: &[String]) -> bool {
-    !(name == "opencode" && selected.iter().any(|n| n == "claude-code"))
-}
-
 fn format_skill_outcome(harness: &str, result: &InstallResult, uninstalling: bool) -> Vec<String> {
     match result {
         InstallResult::Installed if uninstalling => vec![format!("  {harness:<12} skill removed")],
@@ -364,18 +405,13 @@ fn print_skill_outcome(harness: &str, result: &InstallResult, uninstalling: bool
 
 /// Run the authoring-skill install or uninstall for one harness.
 /// Returns `(any_ok, any_fail)` so the caller can fold into its accumulators.
-/// Returns `(false, false)` when the skill step is skipped by dedup.
 fn run_skill_step(
     h: &Harness,
     env: &AdapterEnv,
     scope: Scope,
     opts: &Options,
-    names: &[String],
+    label: &str,
 ) -> (bool, bool) {
-    let do_skill = opts.uninstall || should_install_skill(h.name, names);
-    if !do_skill {
-        return (false, false);
-    }
     let s = if opts.uninstall {
         uninstall_skill(h, env, scope)
     } else {
@@ -383,11 +419,11 @@ fn run_skill_step(
     };
     match s {
         Ok(o) => {
-            print_skill_outcome(o.harness, &o.result, opts.uninstall);
-            (true, false)
+            print_skill_outcome(label, &o.result, opts.uninstall);
+            result_flags(&o.result, opts.uninstall)
         }
         Err(e) => {
-            println!("  {:<12} skill failed: {e:#}", h.name);
+            println!("  {label:<12} skill failed: {e:#}");
             (false, true)
         }
     }
@@ -413,16 +449,18 @@ mod tests {
 
     #[test]
     fn select_explicit_all_returns_every_harness() {
-        let names = select_harness_names(&["all".to_string()]).unwrap();
-        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
+        let names = select_harness_names(&["all".to_string()], false).unwrap();
+        assert_eq!(names, vec!["pi"]);
+        let cleanup = select_harness_names(&["all".to_string()], true).unwrap();
+        assert_eq!(cleanup, vec!["claude-code", "codex", "pi", "opencode"]);
     }
     #[test]
     fn select_explicit_unknown_errors() {
-        assert!(select_harness_names(&["bogus".to_string()]).is_err());
+        assert!(select_harness_names(&["bogus".to_string()], false).is_err());
     }
     #[test]
     fn select_explicit_dedup_and_order() {
-        let names = select_harness_names(&["pi".to_string(), "pi".to_string()]).unwrap();
+        let names = select_harness_names(&["pi".to_string(), "pi".to_string()], false).unwrap();
         assert_eq!(names, vec!["pi"]);
     }
 
@@ -439,20 +477,6 @@ mod tests {
         assert!(
             format_outcome("pi", &Failed("y".to_string()), "h", false)[0].contains("failed: y")
         );
-    }
-
-    #[test]
-    fn dedup_skips_opencode_skill_when_claude_present() {
-        let sel = vec!["claude-code".to_string(), "opencode".to_string()];
-        assert!(!should_install_skill("opencode", &sel));
-        assert!(should_install_skill("claude-code", &sel));
-        assert!(should_install_skill("pi", &sel));
-    }
-
-    #[test]
-    fn dedup_installs_opencode_skill_when_claude_absent() {
-        let sel = vec!["opencode".to_string(), "pi".to_string()];
-        assert!(should_install_skill("opencode", &sel));
     }
 
     #[test]
@@ -480,20 +504,17 @@ mod tests {
             ("claude-code".to_string(), Source::Detected),
             ("codex".to_string(), Source::Detected),
         ];
-        let items = build_items(&selected);
+        let items = build_items(&selected, false);
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
-        assert!(items[0].detected && items[0].selected, "claude-code");
-        assert!(items[1].detected && items[1].selected, "codex");
-        assert!(!items[2].detected && !items[2].selected, "pi");
-        assert!(!items[3].detected && !items[3].selected, "opencode");
+        assert_eq!(names, vec!["pi"]);
+        assert!(!items[0].detected && !items[0].selected, "pi");
     }
 
     #[test]
-    fn build_items_none_detected_yields_four_unchecked() {
-        let items = build_items(&[]);
+    fn build_items_none_detected_yields_pi_unchecked() {
+        let items = build_items(&[], false);
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
+        assert_eq!(names, vec!["pi"]);
         for item in &items {
             assert!(
                 !item.detected && !item.selected,
@@ -501,6 +522,16 @@ mod tests {
                 item.name
             );
         }
+    }
+
+    #[test]
+    fn build_items_for_uninstall_includes_cleanup_only_harnesses() {
+        let selected = vec![("codex".to_string(), Source::Detected)];
+        let items = build_items(&selected, true);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
+        let codex = items.iter().find(|item| item.name == "codex").unwrap();
+        assert!(codex.detected && codex.selected);
     }
 
     #[test]

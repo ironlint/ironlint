@@ -10,7 +10,7 @@ fn trust_writes_a_store_entry() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
     )
     .unwrap();
 
@@ -31,9 +31,9 @@ fn trust_writes_a_store_entry() {
 /// Task 5.31: `ironlint trust` prints a summary of exactly what it blessed —
 /// the config hash (first 16 hex chars) and every script file under
 /// `.ironlint/scripts/` — so the operator can eyeball trust coverage instead
-/// of taking it on faith. Scripts referenced by `run:`/`steps[].run` but
-/// located outside `.ironlint/scripts/` are NOT summarized (and NOT hashed);
-/// see `out_of_dir_referenced_script_is_not_hashed`.
+/// of taking it on faith. Commands that reference files outside
+/// `.ironlint/scripts/` do not add those files to the trust surface;
+/// see `editing_a_referenced_outside_script_does_not_change_hash`.
 #[test]
 fn trust_prints_blessed_summary() {
     let proj = tempfile::tempdir().unwrap();
@@ -41,7 +41,7 @@ fn trust_prints_blessed_summary() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/lint.sh\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/lint.sh\"\n",
     )
     .unwrap();
     let scripts = proj.path().join(".ironlint/scripts");
@@ -72,7 +72,7 @@ fn trust_summary_prints_zero_scripts_when_empty() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
     )
     .unwrap();
 
@@ -130,19 +130,14 @@ fn unblessed_config_check_exits_4() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"exit 0\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"exit 0\"\n",
     )
     .unwrap();
-    let target = proj.path().join("a.rs");
-    fs::write(&target, "x\n").unwrap();
-
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("XDG_CONFIG_HOME", xdg.path())
         .args(["check", "--config"])
         .arg(&cfg)
-        .arg("--file")
-        .arg(&target)
         .assert()
         .failure()
         .code(4)
@@ -150,7 +145,7 @@ fn unblessed_config_check_exits_4() {
 }
 
 /// Sibling guard for `unblessed_config_check_exits_4`: a config that fails to
-/// **parse** (legacy pre-0.3 schema) must keep exit **1**, not collapse into
+/// **parse** must keep exit **1**, not collapse into
 /// the untrusted-config exit 4. It can never even be blessed (`ironlint
 /// trust` itself refuses to bless anything that doesn't parse — see
 /// `trust_rejects_unparseable_config` above), so this hits `check` directly:
@@ -163,17 +158,12 @@ fn parse_error_config_check_exits_1() {
     let proj = tempfile::tempdir().unwrap();
     let xdg = tempfile::tempdir().unwrap();
     let cfg = proj.path().join(".ironlint.yml");
-    fs::write(&cfg, "schema_version: 2\nrules: {}\n").unwrap(); // legacy -> parser rejects
-    let target = proj.path().join("a.rs");
-    fs::write(&target, "x\n").unwrap();
-
+    fs::write(&cfg, "schema_version: 2\nrules: {}\n").unwrap();
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("XDG_CONFIG_HOME", xdg.path())
         .args(["check", "--config"])
         .arg(&cfg)
-        .arg("--file")
-        .arg(&target)
         .assert()
         .failure()
         .code(1);
@@ -190,12 +180,9 @@ fn blessed_config_check_runs() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"exit 2\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"exit 2\"\n",
     )
     .unwrap();
-    let target = proj.path().join("a.rs");
-    fs::write(&target, "x\n").unwrap();
-
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("XDG_CONFIG_HOME", xdg.path())
@@ -209,8 +196,6 @@ fn blessed_config_check_runs() {
         .env("XDG_CONFIG_HOME", xdg.path())
         .args(["check", "--config"])
         .arg(&cfg)
-        .arg("--file")
-        .arg(&target)
         .assert()
         .failure()
         .code(2);
@@ -226,15 +211,12 @@ fn editing_check_after_bless_blocks_check() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/g.sh\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/g.sh\"\n",
     )
     .unwrap();
     let scripts = proj.path().join(".ironlint/scripts");
     fs::create_dir_all(&scripts).unwrap();
     fs::write(scripts.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-    let target = proj.path().join("a.rs");
-    fs::write(&target, "x\n").unwrap();
-
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("XDG_CONFIG_HOME", xdg.path())
@@ -250,27 +232,20 @@ fn editing_check_after_bless_blocks_check() {
         .env("XDG_CONFIG_HOME", xdg.path())
         .args(["check", "--config"])
         .arg(&cfg)
-        .arg("--file")
-        .arg(&target)
         .assert()
         .failure()
         .code(4)
         .stderr(predicates::str::contains("not trusted"));
 }
 
-/// Pinning test for the deliberate simplification in the gates→scripts rename
-/// (spec line 40): a script referenced by `run:`/`steps[].run` but located
+/// A script referenced by `run:` but located
 /// OUTSIDE `.ironlint/scripts/` is no longer part of the trust surface, so it
 /// must NOT appear in the blessed summary. (The hash-level guarantee — that
 /// editing such a script does not revoke trust — is pinned at the unit level
 /// by `editing_a_referenced_outside_script_does_not_change_hash` in
 /// ironlint-core; this test pins the user-visible CLI summary, which that
 /// unit test cannot reach.) This keeps the hash surface equal to the
-/// bash-gate enforcement surface (both = `.ironlint/scripts/`); the bash-gate
-/// cannot defend an arbitrary out-of-dir script from agent tampering, so the
-/// summary must not imply the hash covers it either. If this test fails,
-/// someone re-added the referenced-scripts fold — a silent security-model
-/// regression.
+/// summary must not imply the hash covers it either.
 #[test]
 fn out_of_dir_referenced_script_is_absent_from_summary() {
     let proj = tempfile::tempdir().unwrap();
@@ -279,7 +254,7 @@ fn out_of_dir_referenced_script_is_absent_from_summary() {
     // The check references a script at the repo root — OUTSIDE .ironlint/scripts/.
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"./lint.sh\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"./lint.sh\"\n",
     )
     .unwrap();
     fs::write(proj.path().join("lint.sh"), "#!/bin/sh\nexit 0\n").unwrap();
@@ -298,4 +273,103 @@ fn out_of_dir_referenced_script_is_absent_from_summary() {
                 .and(predicates::str::contains("scripts: 0"))
                 .and(predicates::str::contains("lint.sh").not()),
         );
+}
+
+/// SECURITY REGRESSION (v1.0.0 release blocker): trust is verified once over
+/// the policy plus every file under `.ironlint/scripts/`, but each check runs
+/// `sh -c` against the LIVE filesystem. A check executed earlier in the same
+/// acceptance pass can therefore rewrite a managed script, and a later check
+/// executes bytes that were never approved. `c-restore` puts the original
+/// bytes back before the process exits, so a hash-before/hash-after comparison
+/// also passes. The only acceptable outcomes are that the approved bytes
+/// execute or the run fails closed; unapproved bytes must never execute.
+#[test]
+fn script_mutated_between_trust_and_execution_never_executes() {
+    let proj = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("mutated-ran");
+    let marker_str = marker.to_str().unwrap();
+    let root = proj.path();
+    let cfg = root.join(".ironlint.yml");
+
+    fs::write(
+        &cfg,
+        format!(
+            r#"version: 1
+checks:
+  a-rewrite:
+    on: [accept]
+    run: |
+      cat > "$IRONLINT_ROOT/.ironlint/scripts/gate.sh" <<'EOF'
+      #!/bin/sh
+      echo mutated > '{marker_str}'
+      exit 0
+      EOF
+  b-gate:
+    on: [accept]
+    run: |
+      sh "$IRONLINT_ROOT/.ironlint/scripts/gate.sh"
+  c-restore:
+    on: [accept]
+    run: |
+      cat > "$IRONLINT_ROOT/.ironlint/scripts/gate.sh" <<'EOF'
+      #!/bin/sh
+      exit 0
+      EOF
+"#
+        ),
+    )
+    .unwrap();
+    let scripts = root.join(".ironlint/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(scripts.join("gate.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["trust", "--config"])
+        .arg(&cfg)
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "check",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--root",
+            root.to_str().unwrap(),
+            "--event",
+            "accept",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    // The fix binds execution fail-closed: the drifted run stops before
+    // `b-gate`, reports the incomplete verdict, and never passes.
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "drifted run must exit 3 (incomplete); stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], 7);
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["not_run"][0]["id"], "b-gate");
+    assert_eq!(value["not_run"][0]["reason"], "policy_changed");
+    assert!(
+        !marker.exists(),
+        "a check executed .ironlint/scripts bytes that were never approved; \
+         exit={:?} stdout={} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }

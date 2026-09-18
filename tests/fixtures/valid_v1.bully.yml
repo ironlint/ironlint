@@ -1,9 +1,0 @@
-schema_version: 1
-
-rules:
-  ruff-check:
-    description: "Code must pass ruff check."
-    engine: script
-    scope: ["*.py"]
-    severity: error
-    script: "ruff check --quiet {file}"

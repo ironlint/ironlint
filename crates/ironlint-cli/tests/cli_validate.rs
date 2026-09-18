@@ -7,7 +7,7 @@ fn validate_accepts_valid_checks_config() {
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
     )
     .unwrap();
     let out = Command::cargo_bin("ironlint")
@@ -32,7 +32,7 @@ fn validate_accepts_multi_check_config() {
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  a:\n    files: [\"*.rs\"]\n    run: \"true\"\n  b:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  a:\n    files: [\"*.rs\"]\n    run: \"true\"\n  b:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
     )
     .unwrap();
     let out = Command::cargo_bin("ironlint")
@@ -51,7 +51,7 @@ fn validate_accepts_multi_check_config() {
 }
 
 #[test]
-fn validate_rejects_legacy_rules_config() {
+fn validate_rejects_unversioned_rules_config() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(&cfg, "schema_version: 2\nrules: {}\n").unwrap();
@@ -65,14 +65,13 @@ fn validate_rejects_legacy_rules_config() {
 
 #[test]
 fn validate_rejects_unknown_check_field() {
-    // `exclude:` was a real field in the pre-0.3 engine model; a 0.4 check is
-    // exactly `{ files, run }`. A stale/typo'd field must hard-error at validate
+    // A stale/typo'd field must hard-error at validate
     // time (exit 1) and name the offending field — never be silently dropped.
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.ts\"\n    exclude: \"*.test.ts\"\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.ts\"\n    exclude: \"*.test.ts\"\n    run: \"true\"\n",
     )
     .unwrap();
     let out = Command::cargo_bin("ironlint")
@@ -100,7 +99,7 @@ fn validate_rejects_run_with_no_executable_content() {
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*\"\n    run: \"# todo: write this check\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*\"\n    run: \"# todo: write this check\"\n",
     )
     .unwrap();
     Command::cargo_bin("ironlint")
@@ -130,7 +129,7 @@ fn validate_rejects_removed_architecture_key() {
     let config = dir.path().join(".ironlint.yml");
     std::fs::write(
         &config,
-        "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks: {}\n",
+        "version: 1\narchitecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks: {}\n",
     )
     .unwrap();
 
@@ -151,7 +150,7 @@ fn validate_accepts_arch_as_ordinary_check_id() {
     let config = dir.path().join(".ironlint.yml");
     std::fs::write(
         &config,
-        "checks:\n  __arch__:\n    files: \"**/*\"\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  __arch__:\n    files: \"**/*\"\n    run: \"true\"\n",
     )
     .unwrap();
 

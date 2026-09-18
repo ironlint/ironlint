@@ -1,4 +1,4 @@
-//! `ironlint show-resolved-config` — print the post-extends merged check set.
+//! `ironlint show-resolved-config` — print the configured check set.
 //!
 //! Prints each check in id order, annotated by the origin file it was defined
 //! in. `tsv` (default) emits `check_id<TAB>origin<TAB>files(comma-joined)<TAB>run`;
@@ -7,10 +7,8 @@
 
 use crate::cli::ShowFormat;
 use anyhow::Result;
-use ironlint_core::config::Config;
 use serde::Serialize;
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Serialize)]
 struct ResolvedCheck {
@@ -29,9 +27,6 @@ pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
         }
     };
     let rows = match crate::commands::config::load_read_only_with_path(&config_path) {
-        Ok((_config_path, crate::commands::config::ReadOnlyConfig::Legacy { config, origins })) => {
-            build_rows(&config, &origins)
-        }
         Ok((config_path, crate::commands::config::ReadOnlyConfig::V1(v1))) => {
             build_v1_rows(&v1, &config_path)
         }
@@ -59,21 +54,6 @@ fn build_v1_rows(
             origin: origin.display().to_string(),
             files: check.files.clone().unwrap_or_default(),
             run: check.run.clone(),
-        })
-        .collect()
-}
-
-fn build_rows(cfg: &Config, origins: &BTreeMap<String, PathBuf>) -> Vec<ResolvedCheck> {
-    cfg.checks
-        .iter()
-        .map(|(id, check)| ResolvedCheck {
-            check: id.clone(),
-            origin: origins
-                .get(id)
-                .map(|path| path.display().to_string())
-                .unwrap_or_default(),
-            files: check.files.clone(),
-            run: check.run.clone().unwrap_or_default(),
         })
         .collect()
 }

@@ -16,9 +16,7 @@ pub use ops::{
 };
 pub use ops::{plan_install, plan_uninstall};
 pub use plan::PlanStep;
-pub use registry::{
-    adapter_install_surface, all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME,
-};
+pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME};
 
 use std::path::PathBuf;
 
@@ -78,6 +76,9 @@ pub struct Harness {
     pub kind: HarnessKind,
     pub restart_hint: &'static str,
     pub skill: SkillSpec,
+    /// False for legacy adapters retained only so `init --uninstall` can
+    /// remove owned registrations without stranding calls to removed APIs.
+    pub installable: bool,
 }
 
 /// `<config_home>/ironlint/adapters` — sits beside the trust store.
@@ -85,7 +86,11 @@ pub fn adapters_dir(env: &AdapterEnv) -> PathBuf {
     env.config_home.join("ironlint").join("adapters")
 }
 
-/// `(harness-name, installed-on-this-machine?)` for every supported harness.
+/// `(harness-name, present-on-this-machine?)` for every known harness.
+///
+/// Cleanup-only harnesses remain visible here so `init --uninstall` can find
+/// registrations left by an older release. Installation callers filter them
+/// using [`Harness::installable`].
 pub fn detect(env: &AdapterEnv) -> Vec<(&'static str, bool)> {
     all_harnesses()
         .into_iter()

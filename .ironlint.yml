@@ -1,61 +1,20 @@
-# IronLint's own policy, in the 0.4 checks model. Dogfooded by scripts/ci-dogfood.sh.
-#
-# Checks have no severity — any nonzero exit (1–125) blocks. The pre-0.3
-# `severity: warning` rules (no-unwrap-in-src / no-panic-in-src /
-# no-eprintln-debug) are therefore dropped, not downgraded: ironlint's own
-# test-heavy src legitimately uses .unwrap()/panic! in #[cfg(test)] code, so a
-# blocking check would be wrong. The three former `severity: error` rules stay as
-# blocking checks. The old in-YAML `trust:` block is gone — trust now lives in
-# the out-of-repo store (`ironlint trust`).
+version: 1
+
+execution:
+  timeout_secs: 60
+  total_timeout_secs: 600
+
 checks:
-  no-debug-macros-in-src:
-    name: no debug macros in src
-    files: crates/*/src/**/*.rs
-    steps:
-      - name: no todo!()
-        run: '! grep -nE "todo!\("'
-      - name: no unimplemented!()
-        run: '! grep -nE "unimplemented!\("'
-      - name: no dbg!()
-        run: '! grep -nE "dbg!\("'
-  no-load-bearing:
-    name: no load-bearing jargon
-    files: "*.md"
-    run: |
-      matches=$(grep -inE 'load[- ]?bearing' -) && {
-        echo "Banned term: 'load-bearing'/'load bearing'/'loadbearing' is not allowed in markdown files."
-        echo "$matches"
-        exit 1
-      }
-      exit 0
-  no-trailing-whitespace:
-    name: no trailing whitespace
-    files: ["**/*.rs", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
-    run: '! grep -nE "[[:space:]]$"'
-
-  final-newline:
-    name: file ends with newline
-    files:
-      ["**/*.rs", "**/*.md", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
-    run: |
-      [ -z "$(tail -c1 /dev/stdin)" ] || {
-        echo "file does not end with a newline" >&2
-        exit 1
-      }
-
   rustfmt:
-    name: rustfmt check
-    files: "**/*.rs"
-    on: [pre-commit]
-    run: |
-      echo "$IRONLINT_FILES" | tr '\n' '\0' | xargs -0 rustfmt --check --color=never
+    files: ["*.rs", "Cargo.toml"]
+    on: [change, accept]
+    run: cargo fmt --all --check
 
-  rust-pre-commit:
-    name: rust quality gate
-    files: "**/*.rs"
-    on: [pre-commit]
-    steps:
-      - name: clippy
-        run: "cargo clippy --all-targets -- -D warnings"
-      - name: unit tests
-        run: "cargo test --lib --bin ironlint"
+  clippy:
+    run: cargo clippy --locked --all-targets -- -D warnings
+
+  tests:
+    run: cargo test --locked
+
+  no-debug-macros:
+    run: "! grep -RInE 'todo!\\(|unimplemented!\\(|dbg!\\(' crates --include='*.rs'"

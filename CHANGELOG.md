@@ -1,6 +1,38 @@
 # Changelog
 
-Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
+Notable released changes to IronLint, newest first.
+
+## [1.0.0] — 2026-09-15
+
+### Breaking
+
+- Require `version: 1` policies with one `run` command per check and acceptance
+  included for every check. Unversioned policies, `extends`, multi-step checks,
+  proposal-content execution, preview execution, and schema-6 results are
+  removed without automatic conversion.
+- Remove `gate-bash`, `watch`, diff-driven execution, telemetry, and the former
+  execution engine. JSON evaluation results use schema 7.
+- New adapter installation is limited to Pi post-edit feedback. Claude Code,
+  Codex, and OpenCode artifacts remain recognizable only for safe uninstall.
+- `ironlint init` scaffolds a v1 policy. Git-hook installation is opt-in with
+  `--git-hook`; that hook runs a complete acceptance evaluation and fails
+  closed on any non-success result.
+
+### Security
+
+- Bind consent to the exact approved bytes: `check` parses the policy from the
+  verified bytes and re-verifies the policy and every `.ironlint/scripts/` file
+  before each check and once after the run. A check that changes them mid-run
+  can no longer execute unapproved content — the remaining checks are `not_run`
+  with reason `policy_changed` and the verdict is `error` (exit 3).
+- `ironlint init` records consent for the baseline bytes it classified, never
+  for a later re-read of the path, so a config rewritten in between is not
+  blessed. A retry after a failed consent write re-records consent for the
+  unmodified baseline without rewriting it, and a user-edited or pre-existing
+  config is never modified or blessed.
+
+Historical entries below describe the behavior of their named releases, not
+the current v1 interface.
 
 ## [0.12.1] — 2026-07-15
 
@@ -797,7 +829,7 @@ section so adapters and consumers see them together. Skip to
 - **Backwards compat:** `ironlint_core::telemetry::read_all` accepts the pre-D1 flat shape via an untagged fallback and lifts each line into the closest typed variant. A one-time stderr deprecation warning fires per process when the fallback is used. The fallback will be removed at the 0.3 verdict freeze.
 - New CLI subcommand `ironlint session start` stamps a `session_init` record explicitly. `ironlint session record` stamps one lazily on its first invocation per session.
 - **Breaking (library):** `pub enum LogEntry` replaces `pub struct LogEntry` in `ironlint_core::telemetry`. Pre-1.0; consumers using the writer should migrate to constructing the appropriate variant.
-- Wire format documented in [`docs/operating/telemetry.md`](docs/operating/telemetry.md).
+- The telemetry guide described here was removed with the legacy telemetry path in v1.
 
 ## 0.1b — Engine set complete
 

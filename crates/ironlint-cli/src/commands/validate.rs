@@ -10,11 +10,7 @@ pub fn run(config: &Path, format: OutputFormat) -> Result<i32> {
             return Ok(crate::commands::error_report::emit_error(format, &msg, 1));
         }
     };
-    let result = if crate::commands::config::is_versioned_config(&config) {
-        ironlint_core::config::validate_v1_file(&config)
-    } else {
-        ironlint_core::config::parse_file_with_extends(&config).map(|cfg| cfg.checks.len())
-    };
+    let result = ironlint_core::config::validate_v1_file(&config);
     match result {
         Ok(check_count) => {
             match format {

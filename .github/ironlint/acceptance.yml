@@ -1,0 +1,13 @@
+version: 1
+
+execution:
+  timeout_secs: 300
+  total_timeout_secs: 900
+
+checks:
+  clippy:
+    run: cargo clippy --locked --workspace --all-targets -- -D warnings
+  fmt:
+    run: cargo fmt --all -- --check
+  test:
+    run: cargo test --locked --workspace --no-fail-fast

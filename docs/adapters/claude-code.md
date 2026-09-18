@@ -1,8 +1,11 @@
 # Claude Code integration
 
-The [adapter README](../../adapters/claude-code/README.md) documents the current
-unversioned write-hook installation, supported tools, and removal options.
-It is not a v1 completed-edit feedback integration. Live capture remains pending.
+New Claude Code adapter installation is not supported in IronLint v1. If an
+older owned installation remains, remove it with:
 
-See [adapter status](README.md) for the v1 gap and
-[the plan](../../plans/2026-09-05-ironlint-v1-implementation.md) for the next work.
+```sh
+ironlint init --uninstall --harness claude-code
+```
+
+IronLint preserves edited or unrecognized files for manual review. Use the
+[v1 command-line workflow](../getting-started.md) for current policies.

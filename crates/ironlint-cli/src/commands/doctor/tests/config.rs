@@ -10,7 +10,7 @@ use tempfile::tempdir;
 #[test]
 fn config_present_pass_when_file_exists() {
     let d = tempdir().unwrap();
-    fs::write(d.path().join(".ironlint.yml"), "checks: {}\n").unwrap();
+    fs::write(d.path().join(".ironlint.yml"), "version: 1\nchecks: {}\n").unwrap();
     let r = check_config_present(&ctx_with(d.path()));
     assert_eq!(r.status, Status::Pass);
 }
@@ -35,7 +35,7 @@ fn parses_pass_on_valid_checks_config() {
     let d = tempdir().unwrap();
     fs::write(
         d.path().join(".ironlint.yml"),
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
     )
     .unwrap();
     let r = check_config_parses(&ctx_with(d.path()));
@@ -55,7 +55,7 @@ fn check_scripts_pass_for_inline_commands() {
     let d = tempdir().unwrap();
     fs::write(
         d.path().join(".ironlint.yml"),
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     )
     .unwrap();
     let r = check_script_paths(&ctx_with(d.path()));
@@ -78,12 +78,4 @@ fn check_run_path_fails_missing_script() {
     let result = check_run_path(d.path(), "g", ".ironlint/scripts/missing.sh");
     assert!(result.is_some());
     assert!(result.unwrap().contains("not found"));
-}
-
-#[test]
-fn check_run_path_skips_legacy_gates_path() {
-    // After the rename, doctor only checks scripts under .ironlint/scripts/.
-    // A legacy .ironlint/gates/ path is not the policy surface and is skipped
-    // (returns None) rather than flagged as missing.
-    assert!(check_run_path(Path::new("."), "g", ".ironlint/gates/missing.sh").is_none());
 }

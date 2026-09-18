@@ -10,7 +10,7 @@ fn validate_json_on_good_config_emits_ok() {
     let cfg = tmp.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  py:\n    files: [\"*.py\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  py:\n    files: [\"*.py\"]\n    run: \"true\"\n",
     )
     .unwrap();
 
@@ -55,18 +55,14 @@ fn check_json_on_untrusted_config_emits_error_object_not_empty_stdout() {
     let cfg = tmp.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  py:\n    files: [\"*.py\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  py:\n    files: [\"*.py\"]\n    run: \"true\"\n",
     )
     .unwrap();
-    let src = tmp.path().join("x.py");
-    fs::write(&src, "x").unwrap();
     // Deliberately do NOT bless the trust store -> exit 4, untrusted.
 
     let out = Command::cargo_bin("ironlint")
         .unwrap()
-        .args(["check", "--file"])
-        .arg(&src)
-        .arg("--config")
+        .args(["check", "--config"])
         .arg(&cfg)
         .args(["--format", "json"])
         .output()

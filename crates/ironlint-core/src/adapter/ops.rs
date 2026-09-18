@@ -72,6 +72,15 @@ fn plugin_dir(spec: &PluginSpec, env: &AdapterEnv, scope: Scope) -> PathBuf {
 // --- install -----------------------------------------------------------------
 
 pub fn install(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<InstallOutcome> {
+    if !h.installable {
+        return Ok(InstallOutcome {
+            harness: h.name,
+            result: InstallResult::Skipped(
+                "legacy adapter is available only for owned-install cleanup".into(),
+            ),
+            hint: h.restart_hint,
+        });
+    }
     let result = match &h.kind {
         HarnessKind::JsonHook(spec) => install_jsonhook(h.name, spec, env, scope)?,
         HarnessKind::Plugin(spec) => install_plugin(spec, env, scope)?,
@@ -147,6 +156,15 @@ fn skill_base(spec: &SkillSpec, env: &AdapterEnv, scope: Scope) -> PathBuf {
 }
 
 pub fn install_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<InstallOutcome> {
+    if !h.installable {
+        return Ok(InstallOutcome {
+            harness: h.name,
+            result: InstallResult::Skipped(
+                "legacy adapter is available only for owned-install cleanup".into(),
+            ),
+            hint: h.restart_hint,
+        });
+    }
     let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
     let file = dir.join("SKILL.md");
     let result = install_skill_file(&file, &dir, h.skill.source.as_bytes())?;
@@ -179,10 +197,10 @@ fn install_skill_file(file: &Path, dir: &Path, bytes: &[u8]) -> Result<InstallRe
 
 pub fn uninstall_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<InstallOutcome> {
     let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
-    let _ = std::fs::remove_dir_all(&dir);
+    let result = remove_owned_files(&dir, &["SKILL.md"])?;
     Ok(InstallOutcome {
         harness: h.name,
-        result: InstallResult::Installed,
+        result,
         hint: h.restart_hint,
     })
 }
@@ -281,8 +299,8 @@ fn uninstall_jsonhook(
             write_settings(&settings, &value)?;
         }
     }
-    remove_dir_if_present(&dir)?;
-    Ok(InstallResult::Installed)
+    let names: Vec<&str> = spec.files.iter().map(|(name, _)| *name).collect();
+    remove_owned_files(&dir, &names)
 }
 
 fn uninstall_plugin(
@@ -292,16 +310,62 @@ fn uninstall_plugin(
     scope: Scope,
 ) -> Result<InstallResult> {
     let dir = plugin_dir(spec, env, scope);
-    let file = dir.join(spec.filename);
-    let _ = std::fs::remove_file(&file);
-    let _ = std::fs::remove_file(crate::adapter::sidecar_path(&dir));
-    Ok(InstallResult::Installed)
+    remove_owned_files(&dir, &[spec.filename])
 }
 
-fn remove_dir_if_present(dir: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+/// Remove only files recorded by the installer and left byte-for-byte intact.
+/// A changed file or unknown content stays on disk for manual review.
+fn remove_owned_files(dir: &Path, names: &[&str]) -> Result<InstallResult> {
+    let metadata = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(InstallResult::Installed);
+        }
+        Err(e) => return Err(e).with_context(|| format!("inspecting {}", dir.display())),
+    };
+    if !metadata.is_dir() {
+        return Ok(InstallResult::Skipped(format!(
+            "preserved non-directory {}; review and remove manually",
+            dir.display()
+        )));
+    }
+    let Some(sidecar) = read_sidecar(dir)? else {
+        return Ok(InstallResult::Skipped(format!(
+            "preserved {} without ownership record; review and remove manually",
+            dir.display()
+        )));
+    };
+    for name in names {
+        let file = dir.join(name);
+        let bytes = match std::fs::read(&file) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+        };
+        if sidecar.files.get(*name) != Some(&sha256_hex(&bytes)) {
+            return Ok(InstallResult::Skipped(format!(
+                "preserved edited {}; review and remove manually",
+                file.display()
+            )));
+        }
+        std::fs::remove_file(&file)
+            .with_context(|| format!("removing owned {}", file.display()))?;
+    }
+    let record = crate::adapter::sidecar_path(dir);
+    match std::fs::remove_file(&record) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("removing {}", record.display())),
+    }
+    match std::fs::remove_dir(dir) {
+        Ok(()) => Ok(InstallResult::Installed),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(InstallResult::Installed),
+        Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+            Ok(InstallResult::Skipped(format!(
+                "preserved additional content in {}; review manually",
+                dir.display()
+            )))
+        }
         Err(e) => Err(e).with_context(|| format!("removing {}", dir.display())),
     }
 }
@@ -421,10 +485,27 @@ mod tests {
     };
 
     fn harness(name: &str) -> crate::adapter::Harness {
-        all_harnesses()
+        let mut harness = all_harnesses()
             .into_iter()
             .find(|h| h.name == name)
-            .unwrap()
+            .unwrap();
+        // Most tests exercise the shared installer/uninstaller mechanics.
+        // Cleanup-only legacy adapters remain constructible for those tests,
+        // while the production registry keeps them non-installable.
+        harness.installable = true;
+        harness
+    }
+
+    #[test]
+    fn cleanup_only_adapter_is_not_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let harness = all_harnesses()
+            .into_iter()
+            .find(|h| h.name == "codex")
+            .unwrap();
+        let out = install(&harness, &e, Scope::Global).unwrap();
+        assert!(matches!(out.result, InstallResult::Skipped(_)));
     }
     fn env(tmp: &std::path::Path) -> AdapterEnv {
         AdapterEnv {
@@ -528,6 +609,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn uninstall_jsonhook_preserves_user_edits_and_deregisters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("codex");
+        install(&h, &e, Scope::Global).unwrap();
+        let dir = e.config_home.join("ironlint/adapters/codex");
+        let hook = dir.join("hook.sh");
+        std::fs::write(&hook, b"#!/bin/sh\n# user edit\n").unwrap();
+        let extra = dir.join("my-notes.txt");
+        std::fs::write(&extra, b"keep me").unwrap();
+
+        uninstall(&h, &e, Scope::Global).unwrap();
+        let settings = std::fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap();
+        assert!(!settings.contains(&dir.display().to_string()));
+        assert_eq!(std::fs::read(&hook).unwrap(), b"#!/bin/sh\n# user edit\n");
+        assert_eq!(std::fs::read(&extra).unwrap(), b"keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_jsonhook_does_not_follow_replaced_adapter_directory() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("codex");
+        install(&h, &e, Scope::Global).unwrap();
+        let dir = e.config_home.join("ironlint/adapters/codex");
+        let outside = tmp.path().join("outside");
+        std::fs::rename(&dir, &outside).unwrap();
+        symlink(&outside, &dir).unwrap();
+
+        let out = uninstall(&h, &e, Scope::Global).unwrap();
+        assert!(matches!(out.result, InstallResult::Skipped(_)));
+        assert!(outside.join("hook.sh").exists());
+        assert!(outside.join(".ironlint-adapter.json").exists());
+        let settings = std::fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap();
+        assert!(!settings.contains(&dir.display().to_string()));
     }
 
     #[test]
@@ -668,6 +790,19 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_plugin_preserves_edited_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("opencode");
+        install(&h, &e, Scope::Local).unwrap();
+        let file = e.project_root.join(".opencode/plugins/ironlint.ts");
+        std::fs::write(&file, b"// user edit").unwrap();
+        let out = uninstall(&h, &e, Scope::Local).unwrap();
+        assert!(matches!(out.result, InstallResult::Skipped(_)));
+        assert_eq!(std::fs::read(&file).unwrap(), b"// user edit");
+    }
+
+    #[test]
     fn install_skill_writes_skill_md_and_sidecar() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
@@ -709,6 +844,19 @@ mod tests {
         assert!(dir.exists());
         uninstall_skill(&harness("pi"), &e, Scope::Local).unwrap();
         assert!(!dir.exists(), "uninstall must remove the skill dir");
+    }
+
+    #[test]
+    fn uninstall_skill_preserves_edited_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("pi");
+        install_skill(&h, &e, Scope::Local).unwrap();
+        let file = e.project_root.join(".pi/skills/ironlint-config/SKILL.md");
+        std::fs::write(&file, b"# user edit").unwrap();
+        let out = uninstall_skill(&h, &e, Scope::Local).unwrap();
+        assert!(matches!(out.result, InstallResult::Skipped(_)));
+        assert_eq!(std::fs::read(&file).unwrap(), b"# user edit");
     }
 
     #[test]

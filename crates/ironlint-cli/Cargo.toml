@@ -11,24 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 ironlint-core = { path = "../ironlint-core" }
-# Bash self-trust prevention (`ironlint gate-bash`): pure classifier the
-# adapters' Bash branches shell out to. No I/O deps of its own.
-ironlint-bash-gate = { path = "../ironlint-bash-gate" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-# Live TUI (`ironlint watch`): renders the telemetry stream + per-check explorer.
-# ratatui re-exports crossterm, so we depend on it alone for backend + events.
-# `default-features = false` drops `all-widgets` (only adds `widget-calendar`,
-# which we don't use — we touch `List`/`Paragraph`/`Block`/`Clear`/`ListState`).
-# The four enabled features are exactly what `watch` needs: crossterm backend,
-# macros, underline-color, and the layout cache.
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "macros", "underline-color", "layout-cache"] }
-# Repo-wide sweep (`ironlint check` with no --file/--diff): gitignore-aware
-# directory walker — the same rule engine ripgrep uses.
-ignore = "0.4"
 
 [dev-dependencies]
 assert_cmd.workspace = true

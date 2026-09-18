@@ -439,7 +439,7 @@ fn v1_rejects_unsupported_event_before_trust() {
     assert_eq!(output.status.code(), Some(1));
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["schema"], 7);
-    assert_eq!(value["event"], "write");
+    assert_eq!(value["event"], "invalid");
     assert_eq!(value["status"], "error");
 }
 
@@ -667,35 +667,6 @@ fn default_v1_usage_errors_have_schema_seven_json() {
     assert_eq!(value["schema"], 7);
     assert_eq!(value["event"], "accept");
     assert_eq!(value["status"], "error");
-}
-
-#[test]
-fn legacy_usage_errors_do_not_emit_schema_seven() {
-    let dir = tempdir().unwrap();
-    let cfg = dir.path().join("legacy.yml");
-    fs::write(
-        &cfg,
-        "checks:\n  all:\n    files: '**/*'\n    run: 'exit 0'\n",
-    )
-    .unwrap();
-
-    let output = Command::cargo_bin("ironlint")
-        .unwrap()
-        .args([
-            "check",
-            "--config",
-            cfg.to_str().unwrap(),
-            "--event",
-            "accept",
-            "--format",
-            "json",
-            "--bogus",
-        ])
-        .output()
-        .unwrap();
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
 }
 
 #[test]

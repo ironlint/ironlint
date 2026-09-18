@@ -31,7 +31,7 @@ fn trusted_sibling_runs_a_blocking_check_and_exits_2() {
     let cfg = primary.join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"sh .ironlint/scripts/g.sh\"\n",
+        "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"sh .ironlint/scripts/g.sh\"\n",
     )
     .unwrap();
     std::fs::create_dir_all(primary.join(".ironlint/scripts")).unwrap();
@@ -79,14 +79,13 @@ fn trusted_sibling_runs_a_blocking_check_and_exits_2() {
         .stdout(predicates::str::contains("scripts:"));
     // In the sibling: check runs the blocking gate -> exit 2.
     let linked_cfg = linked_wt.join(".ironlint.yml");
-    std::fs::write(linked_wt.join("dummy.rs"), "fn main() {}\n").unwrap();
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("XDG_CONFIG_HOME", xdg.path())
         .args(["check", "--config"])
         .arg(&linked_cfg)
-        .arg("--file")
-        .arg(linked_wt.join("dummy.rs"))
+        .arg("--root")
+        .arg(&linked_wt)
         .assert()
         .failure()
         .code(2);

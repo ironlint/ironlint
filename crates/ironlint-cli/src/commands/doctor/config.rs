@@ -85,14 +85,6 @@ pub(super) fn check_config_parses_snapshot(
             detail: "config missing; nothing to parse".into(),
             remediation: Some("run `ironlint init` first".into()),
         },
-        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::Legacy {
-            config, ..
-        }) => CheckResult {
-            name: "parses",
-            status: Status::Pass,
-            detail: format!("config parses ({} check(s))", config.checks.len()),
-            remediation: None,
-        },
         ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::V1(config)) => {
             CheckResult {
                 name: "parses",
@@ -125,19 +117,6 @@ pub(super) fn check_script_paths_snapshot(
     snapshot: &ConfigSnapshot,
 ) -> CheckResult {
     let (check_count, bad) = match snapshot {
-        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::Legacy {
-            config, ..
-        }) => {
-            let mut bad = Vec::new();
-            for (id, check) in &config.checks {
-                for step in check.effective_steps() {
-                    if let Some(issue) = check_run_path(&ctx.dir, id, &step.run) {
-                        bad.push(issue);
-                    }
-                }
-            }
-            (config.checks.len(), bad)
-        }
         ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::V1(config)) => {
             let mut bad = Vec::new();
             for (id, check) in &config.checks {
@@ -302,25 +281,6 @@ mod tests {
             check_script_paths_snapshot(&ctx, &snapshot).status,
             Status::Warn
         );
-    }
-
-    #[test]
-    fn doctor_reports_missing_extended_policy_without_claiming_root_absent() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join(".ironlint.yml");
-        fs::write(&config_path, "extends: [missing.yml]\nchecks: {}\n").unwrap();
-        let snapshot = load_config_snapshot(&config_path);
-        let ctx = DoctorContext {
-            dir: dir.path().to_path_buf(),
-            config_path,
-        };
-
-        let present = check_config_present_snapshot(&ctx, &snapshot);
-        assert_eq!(present.status, Status::Pass);
-        assert!(present.remediation.is_none());
-        let parses = check_config_parses_snapshot(&ctx, &snapshot);
-        assert_eq!(parses.status, Status::Fail);
-        assert!(parses.detail.contains("missing.yml"), "{}", parses.detail);
     }
 
     #[test]

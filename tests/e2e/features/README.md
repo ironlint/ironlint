@@ -37,7 +37,8 @@ bounds. Adapter owners maintain event translation, harness installation, and
 their own optional pinned-runtime smoke tests. They may live in their adapter
 domain or a separate project. Core releases require no live harness capture.
 
-The existing `../init/` suite separately checks legacy installer artifacts using
-seeded harness directories; it does not execute real harnesses either. Keep it
-until owned-install cleanup retires the legacy paths. Detailed process limits,
-path validation, and schema cases remain in the fast Rust test suites.
+The existing `../init/` suite separately checks installer artifacts using seeded
+harness directories, including the Pi post-edit extension; it does not execute
+real harnesses either. Keep it until owned-install cleanup retires the legacy
+paths. Detailed process limits, path validation, and schema cases remain in the
+fast Rust test suites.

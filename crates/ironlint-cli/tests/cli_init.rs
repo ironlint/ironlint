@@ -24,8 +24,8 @@ fn init_scaffolds_checks_config_not_rules() {
     run_init(dir.path());
     let cfg = read_cfg(dir.path());
     assert!(
-        cfg.starts_with("checks:\n"),
-        "checks model config must start with `checks:`:\n{cfg}"
+        cfg.starts_with("version: 1\n"),
+        "v1 config must start with `version: 1`:\n{cfg}"
     );
     assert!(
         !cfg.contains("schema_version"),
@@ -117,10 +117,7 @@ fn init_scaffolds_universal_baseline_regardless_of_stack() {
             cfg.contains("no-merge-markers:"),
             "{manifest}: missing no-merge-markers:\n{cfg}"
         );
-        assert!(
-            cfg.contains("$IRONLINT_TMPFILE"),
-            "{manifest}: missing tmpfile example:\n{cfg}"
-        );
+        assert!(cfg.contains("on: [change, accept]"));
         // No toolchain-specific scaffolding.
         for tool in [
             "biome",
@@ -194,81 +191,6 @@ fn init_dry_run_plans_skill_installs_for_explicit_harnesses() {
     );
 }
 
-#[test]
-fn init_dedups_opencode_skill_when_claude_also_selected() {
-    let dir = tempfile::tempdir().unwrap();
-    let xdg = tempfile::tempdir().unwrap();
-    let out = assert_cmd::Command::cargo_bin("ironlint")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "init",
-            "--dir",
-            dir.path().to_str().unwrap(),
-            "--harness",
-            "claude-code",
-            "--harness",
-            "opencode",
-            "--dry-run",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8_lossy(&out);
-    // Assert on paths (spacing-insensitive): claude's skill is planned;
-    // opencode's own skill dir is not (it reads claude's copy).
-    assert!(
-        s.contains(".claude/skills/ironlint-config/SKILL.md"),
-        "claude-code skill must be planned:\n{s}"
-    );
-    assert!(
-        !s.contains(".opencode/skills/ironlint-config"),
-        "opencode skill must be deduped against claude's copy:\n{s}"
-    );
-}
-
-/// Install-side counterpart to `init_dedups_opencode_skill_when_claude_also_selected`:
-/// a REAL (non-dry-run) install must actually write claude-code's skill to
-/// disk while actually skipping opencode's own skill dir (it reads claude's
-/// copy), not just omit it from the printed plan.
-#[test]
-fn init_real_install_dedups_opencode_skill_against_claude() {
-    let dir = tempfile::tempdir().unwrap();
-    let xdg = tempfile::tempdir().unwrap();
-    Command::cargo_bin("ironlint")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "init",
-            "--dir",
-            dir.path().to_str().unwrap(),
-            "--harness",
-            "claude-code",
-            "--harness",
-            "opencode",
-            "--yes",
-        ])
-        .assert()
-        .success();
-
-    let claude_skill = dir.path().join(".claude/skills/ironlint-config/SKILL.md");
-    assert!(
-        claude_skill.exists(),
-        "claude-code skill must be installed to disk at {}",
-        claude_skill.display()
-    );
-
-    let opencode_skill = dir.path().join(".opencode/skills/ironlint-config");
-    assert!(
-        !opencode_skill.exists(),
-        "opencode's own skill dir must be deduped (not written) when claude-code \
-         is also installed, since opencode reads claude's copy: {}",
-        opencode_skill.display()
-    );
-}
-
 /// `init` auto-blesses, so a `check` against the scaffolded config runs
 /// without a separate `ironlint trust` step (it is not rejected as untrusted).
 #[test]
@@ -285,25 +207,122 @@ fn init_auto_blesses_so_check_is_trusted() {
         .success();
 
     let cfg = proj.path().join(".ironlint.yml");
-    let target = proj.path().join("a.rs");
-    std::fs::write(&target, "x\n").unwrap();
-
-    // Should NOT be rejected as untrusted. Some scaffolded gate may or may not
-    // block on this file, but the verdict must not be the trust exit-1.
+    // Should NOT be rejected as untrusted.
     let out = Command::cargo_bin("ironlint")
         .unwrap()
         .env("XDG_CONFIG_HOME", xdg.path())
         .args(["check", "--config"])
         .arg(&cfg)
-        .arg("--file")
-        .arg(&target)
+        .arg("--root")
+        .arg(proj.path())
         .assert();
     let code = out.get_output().status.code().unwrap();
-    // Must be a real verdict — pass (0) or block (2) — never untrusted (1) and
-    // never a crashed gate (3). `!= 1` alone would pass on an exit-3 regression.
+    assert_eq!(
+        code, 0,
+        "a freshly scaffolded, otherwise empty project must pass its starter policy"
+    );
+}
+
+/// Release-blocker regression: a fresh `init` that writes the baseline but
+/// fails to store consent must not make a retry skip consent. The retry must
+/// bless that exact unmodified baseline and leave the file untouched.
+#[test]
+fn init_retry_after_consent_failure_records_consent() {
+    let dir = tempdir().unwrap();
+    let xdg = tempdir().unwrap();
+    // A regular file where the trust store's directory must go makes consent
+    // storage fail deterministically.
+    let blocker = xdg.path().join("ironlint");
+    fs::write(&blocker, "blocked").unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["init", "--dir", dir.path().to_str().unwrap(), "--no-hook"])
+        .assert()
+        .failure();
+
+    let cfg = dir.path().join(".ironlint.yml");
+    let scaffolded = fs::read(&cfg).unwrap();
+    assert!(scaffolded.starts_with(b"version: 1"));
+    let store = xdg.path().join("ironlint/trust.json");
     assert!(
-        matches!(code, 0 | 2),
-        "init-blessed config must run to a real verdict (0 or 2), not be \
-         rejected as untrusted (1) or crash a gate (3); got {code}"
+        !store.exists(),
+        "consent storage must have failed before the retry"
+    );
+
+    fs::remove_file(&blocker).unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["init", "--dir", dir.path().to_str().unwrap(), "--no-hook"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read(&cfg).unwrap(),
+        scaffolded,
+        "retry must not rewrite the baseline"
+    );
+    assert!(store.exists(), "retry must record consent");
+    assert!(
+        fs::read_to_string(&store).unwrap().contains("sha256:"),
+        "store must hold the blessed hash"
+    );
+
+    // Consent now actually admits the policy: exit 4 would mean it does not.
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "check",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--root",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .code(0);
+}
+
+/// `init` must never bless or modify a config it did not scaffold: consent for
+/// a user-owned policy is an explicit `ironlint trust` action.
+#[test]
+fn init_does_not_bless_or_modify_a_user_config() {
+    let dir = tempdir().unwrap();
+    let xdg = tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    let user = "version: 1\nchecks:\n  mine: {run: 'exit 0'}\n";
+    fs::write(&cfg, user).unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["init", "--dir", dir.path().to_str().unwrap(), "--no-hook"])
+        .assert()
+        .success();
+
+    assert_eq!(fs::read_to_string(&cfg).unwrap(), user);
+    assert!(
+        !xdg.path().join("ironlint/trust.json").exists(),
+        "init must not record consent for a config it did not scaffold"
+    );
+
+    let out = Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "check",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--root",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert();
+    assert_eq!(
+        out.get_output().status.code(),
+        Some(4),
+        "a user-owned config stays untrusted until `ironlint trust`"
     );
 }

@@ -1,6 +1,6 @@
-# Trigger paths
+# Select checks after a change
 
-In v1, `files` selects early `change` feedback. Acceptance runs every check.
+`files` selects early `change` feedback. `accept` runs every check.
 
 ```yaml
 version: 1
@@ -19,9 +19,10 @@ Pass known paths with repeatable `--file` and explicit `--event change`. Include
 deletions and both rename endpoints. Paths need not exist, but must stay within
 `--root`. In-root symlink names are preserved for trigger matching.
 
-Omitting CLI `--file` means unknown changes and selects all change checks. The
-core API also supports known-empty paths: file-filtered checks stay unselected,
-while unconditional change checks run.
+Omitting CLI `--file` means changed paths are unknown and selects all change
+checks. An integration can also report a known-empty path set: file-filtered
+checks stay unselected, while unconditional change checks run.
 
 `files` is a trigger, not a dependency graph or command sandbox. Commands inspect
-their own inputs. Use `ironlint explain PATH --root ROOT` to inspect change selection.
+their own inputs. Use `ironlint explain PATH --root ROOT` to inspect change
+selection.

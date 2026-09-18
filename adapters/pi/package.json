@@ -1,7 +1,7 @@
 {
   "name": "@christopherarter/ironlint-pi",
   "version": "0.1.0",
-  "description": "pi extension for IronLint — policy enforcement for AI coding agents. tool_call pre-write gate.",
+  "description": "Pi extension for IronLint: post-edit change feedback for AI coding agents.",
   "type": "module",
   "main": "src/index.ts",
   "exports": {

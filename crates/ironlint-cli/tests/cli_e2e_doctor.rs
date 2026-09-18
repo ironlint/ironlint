@@ -11,10 +11,10 @@ use std::path::Path;
 use std::process::Output;
 use tempfile::tempdir;
 
-fn write_gates_config(dir: &Path) {
+fn write_v1_config(dir: &Path) {
     fs::write(
         dir.join(".ironlint.yml"),
-        "checks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
     )
     .unwrap();
 }
@@ -35,7 +35,7 @@ fn run_doctor(dir: &Path, home: &Path) -> Output {
 fn doctor_runs_and_reports_binary_check() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = run_doctor(dir.path(), home.path());
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
@@ -67,10 +67,10 @@ fn doctor_fails_when_config_missing() {
 }
 
 #[test]
-fn doctor_passes_on_clean_gates_config() {
+fn doctor_passes_on_clean_v1_config() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = run_doctor(dir.path(), home.path());
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
@@ -102,7 +102,7 @@ fn doctor_parses_fail_on_legacy_schema_config() {
 fn doctor_omits_adapter_rows_on_clean_machine() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap(); // no harness installed or detected
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = run_doctor(dir.path(), home.path());
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
@@ -116,11 +116,10 @@ fn doctor_omits_adapter_rows_on_clean_machine() {
 }
 
 #[test]
-fn doctor_reports_installed_codex_adapter() {
+fn doctor_reports_installed_pi_adapter() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_gates_config(dir.path());
-    // Wire the codex hook via the real install path, then re-run doctor.
+    write_v1_config(dir.path());
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("HOME", home.path())
@@ -130,8 +129,7 @@ fn doctor_reports_installed_codex_adapter() {
             "--dir",
             dir.path().to_str().unwrap(),
             "--harness",
-            "codex",
-            "--global",
+            "pi",
             "--hook-only",
             "--yes",
         ])
@@ -141,8 +139,8 @@ fn doctor_reports_installed_codex_adapter() {
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(
-        s.contains("codex") && s.contains("ok"),
-        "expected a passing `codex` adapter row: {s}"
+        s.contains("pi") && s.contains("ok"),
+        "expected a passing `pi` adapter row: {s}"
     );
 }
 
@@ -154,7 +152,7 @@ fn doctor_reports_installed_codex_adapter() {
 fn doctor_warns_on_unblessed_config() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = run_doctor(dir.path(), home.path());
     // Read-only: trust is a warn, not a fail → exit 0.
     assert_eq!(
@@ -183,7 +181,7 @@ fn doctor_warns_on_unblessed_config() {
 fn doctor_warns_when_no_hooks_wired() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap(); // clean machine: nothing detected/installed
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = run_doctor(dir.path(), home.path());
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
@@ -204,7 +202,7 @@ fn doctor_warns_when_no_hooks_wired() {
 fn doctor_json_includes_trust_and_hooks_rows() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = Command::cargo_bin("ironlint")
         .unwrap()
         .env("HOME", home.path())
@@ -268,10 +266,10 @@ fn doctor_json_includes_trust_and_hooks_rows() {
 }
 
 #[test]
-fn doctor_json_output_is_valid_for_clean_gates_config() {
+fn doctor_json_output_is_valid_for_clean_v1_config() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_gates_config(dir.path());
+    write_v1_config(dir.path());
     let out = Command::cargo_bin("ironlint")
         .unwrap()
         .env("HOME", home.path())

@@ -2,308 +2,183 @@ use assert_cmd::Command;
 use std::path::Path;
 
 fn ironlint(home: &Path, project: &Path) -> Command {
-    let mut c = Command::cargo_bin("ironlint").unwrap();
-    c.env("HOME", home)
+    let mut command = Command::cargo_bin("ironlint").unwrap();
+    command
+        .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .current_dir(project);
-    c
+    command
+}
+
+fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    (tmp, home, project)
 }
 
 #[test]
-fn init_installs_codex_hook_with_yes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(home.join(".codex")).unwrap();
-
+fn explicit_pi_install_writes_plugin_and_skill() {
+    let (_tmp, home, project) = workspace();
     ironlint(&home, &project)
-        .args(["init", "--harness", "codex", "--yes"])
+        .args(["init", "--harness", "pi", "--yes"])
         .assert()
         .success();
-
-    let hook = home.join(".config/ironlint/adapters/codex/hook.sh");
-    assert!(hook.exists(), "hook artifact materialized");
-    // No --global passed: init defaults to local (project) scope.
-    let settings: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(project.join(".codex/hooks.json")).unwrap())
-            .unwrap();
-    assert!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        .as_str()
-        .unwrap()
-        .contains("adapters/codex/hook.sh"));
+    assert!(project.join(".pi/extensions/ironlint.ts").exists());
+    assert!(project.join(".pi/skills/ironlint-config/SKILL.md").exists());
 }
 
 #[test]
-fn reinstall_reports_already_present() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
-    let run = || {
+fn pi_reinstall_reports_already_present() {
+    let (_tmp, home, project) = workspace();
+    for _ in 0..2 {
         ironlint(&home, &project)
-            .args(["init", "--hook-only", "--harness", "codex", "--yes"])
+            .args(["init", "--hook-only", "--harness", "pi", "--yes"])
             .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone()
-    };
-    run();
-    let out = String::from_utf8(run()).unwrap();
-    assert!(
-        out.contains("already present"),
-        "second run idempotent: {out}"
-    );
+            .success();
+    }
+    ironlint(&home, &project)
+        .args(["init", "--hook-only", "--harness", "pi", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("already present"));
 }
 
 #[test]
-fn dry_run_writes_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
+fn pi_dry_run_writes_nothing() {
+    let (_tmp, home, project) = workspace();
     ironlint(&home, &project)
-        .args([
-            "init",
-            "--hook-only",
-            "--harness",
-            "codex",
-            "--yes",
-            "--dry-run",
-        ])
+        .args(["init", "--hook-only", "--harness", "pi", "--dry-run"])
         .assert()
         .success();
-    // No --global passed: local scope, so the project-local settings file.
-    assert!(!project.join(".codex/hooks.json").exists());
-    assert!(!home
-        .join(".config/ironlint/adapters/codex/hook.sh")
-        .exists());
+    assert!(!project.join(".pi").exists());
 }
 
 #[test]
-fn uninstall_removes_hook() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
+fn pi_uninstall_removes_owned_plugin_and_skill() {
+    let (_tmp, home, project) = workspace();
     ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
+        .args(["init", "--hook-only", "--harness", "pi", "--yes"])
         .assert()
         .success();
     ironlint(&home, &project)
-        .args(["init", "--uninstall", "--harness", "codex"])
+        .args(["init", "--uninstall", "--harness", "pi", "--yes"])
         .assert()
         .success();
-    assert!(!home
-        .join(".config/ironlint/adapters/codex/hook.sh")
-        .exists());
-    // No --global passed on either invocation: local (project) scope.
-    let settings: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(project.join(".codex/hooks.json")).unwrap())
-            .unwrap();
-    let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
-    assert!(
-        arr.iter().all(|e| {
-            e["hooks"].as_array().into_iter().flatten().all(|h| {
-                !h["command"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("adapters/codex/hook.sh")
-            })
-        }),
-        "uninstall must remove the ironlint PreToolUse entry"
-    );
+    assert!(!project.join(".pi/extensions/ironlint.ts").exists());
+    assert!(!project.join(".pi/skills/ironlint-config/SKILL.md").exists());
 }
 
 #[test]
-fn no_tty_without_yes_or_harness_skips_hooks() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(home.join(".codex")).unwrap();
-
-    // assert_cmd pipes stdin (non-TTY); bare init must not install.
-    let out = ironlint(&home, &project)
-        .args(["init", "--hook-only"])
+fn pi_uninstall_preserves_edited_plugin_and_reports_incomplete_cleanup() {
+    let (_tmp, home, project) = workspace();
+    ironlint(&home, &project)
+        .args(["init", "--hook-only", "--harness", "pi", "--yes"])
         .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    assert!(
-        String::from_utf8(out).unwrap().contains("re-run with"),
-        "non-TTY path must print the re-run hint"
-    );
-    // Auto-detect (no --harness) stops before install, so neither the
-    // local (project) nor global settings file is ever written.
-    assert!(!project.join(".codex/hooks.json").exists());
-}
+        .success();
+    let plugin = project.join(".pi/extensions/ironlint.ts");
+    std::fs::write(&plugin, "// user edit\n").unwrap();
 
-#[test]
-fn explicit_harness_renders_plan_with_requested_tag() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
-    let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
+    ironlint(&home, &project)
+        .args(["init", "--uninstall", "--harness", "pi", "--yes"])
         .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8(out).unwrap();
-    assert!(s.contains("ironlint · onboarding"), "header:\n{s}");
-    assert!(s.contains("codex"), "harness:\n{s}");
-    assert!(s.contains("requested"), "explicit → requested tag:\n{s}");
-    assert!(s.contains("hook"), "hook step listed:\n{s}");
-    // --yes still installs
-    assert!(home
-        .join(".config/ironlint/adapters/codex/hook.sh")
-        .exists());
+        .code(3)
+        .stdout(predicates::str::contains("preserved edited"));
+
+    assert_eq!(std::fs::read_to_string(plugin).unwrap(), "// user edit\n");
+    assert!(!project.join(".pi/skills/ironlint-config/SKILL.md").exists());
 }
 
 #[test]
-fn dry_run_renders_plan_but_installs_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
-    let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "codex", "--dry-run"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8(out).unwrap();
-    assert!(
-        s.contains("ironlint · onboarding"),
-        "dry-run still renders plan:\n{s}"
-    );
-    assert!(
-        !home
-            .join(".config/ironlint/adapters/codex/hook.sh")
-            .exists(),
-        "dry-run writes nothing"
-    );
-}
-
-#[test]
-fn uninstall_renders_removal_plan() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
+fn cleanup_only_adapter_cannot_be_newly_installed() {
+    let (_tmp, home, project) = workspace();
     ironlint(&home, &project)
         .args(["init", "--hook-only", "--harness", "codex", "--yes"])
         .assert()
+        .failure()
+        .stderr(predicates::str::contains("available: pi"));
+}
+
+#[test]
+fn default_uninstall_discovers_and_removes_legacy_registration() {
+    let (_tmp, home, project) = workspace();
+    let settings = project.join(".codex/hooks.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let marker = home.join(".config/ironlint/adapters/codex/hook.sh");
+    std::fs::write(
+        &settings,
+        format!(
+            r#"{{
+  "hooks": {{
+    "PreToolUse": [
+      {{"hooks": [{{"type": "command", "command": "{} pre-tool-use"}}]}},
+      {{"hooks": [{{"type": "command", "command": "other-tool"}}]}}
+    ]
+  }}
+}}"#,
+            marker.display()
+        ),
+    )
+    .unwrap();
+
+    ironlint(&home, &project)
+        .args(["init", "--uninstall", "--yes"])
+        .assert()
         .success();
-    let out = ironlint(&home, &project)
-        .args(["init", "--uninstall", "--harness", "codex", "--yes"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8(out).unwrap();
-    assert!(s.contains("ironlint · uninstall"), "uninstall header:\n{s}");
-    assert!(
-        !home
-            .join(".config/ironlint/adapters/codex/hook.sh")
-            .exists(),
-        "uninstall removes the hook"
-    );
+
+    let updated = std::fs::read_to_string(settings).unwrap();
+    assert!(!updated.contains("ironlint/adapters/codex"));
+    assert!(updated.contains("other-tool"));
 }
 
 #[test]
-fn yes_bypasses_toggle_and_installs_detected() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(home.join(".codex")).unwrap();
+fn default_uninstall_also_removes_global_legacy_registration() {
+    let (_tmp, home, project) = workspace();
+    let settings = home.join(".codex/hooks.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let marker = home.join(".config/ironlint/adapters/codex/hook.sh");
+    std::fs::write(
+        &settings,
+        format!(
+            r#"{{
+  "hooks": {{
+    "PreToolUse": [
+      {{"hooks": [{{"type": "command", "command": "{} pre-tool-use"}}]}},
+      {{"hooks": [{{"type": "command", "command": "other-tool"}}]}}
+    ]
+  }}
+}}"#,
+            marker.display()
+        ),
+    )
+    .unwrap();
 
-    let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--yes"])
+    ironlint(&home, &project)
+        .args(["init", "--uninstall", "--yes"])
         .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8(out).unwrap();
-    assert!(
-        !s.contains("Select harnesses"),
-        "--yes must bypass the multi-select UI:\n{s}"
-    );
-    assert!(
-        home.join(".config/ironlint/adapters/codex/hook.sh")
-            .exists(),
-        "codex hook should be installed when detected"
-    );
+        .success();
+
+    let updated = std::fs::read_to_string(settings).unwrap();
+    assert!(!updated.contains("ironlint/adapters/codex"));
+    assert!(updated.contains("other-tool"));
 }
 
 #[test]
-fn explicit_harness_with_yes_skips_toggle_and_installs() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
+fn legacy_uninstall_fails_if_any_registration_cannot_be_cleaned() {
+    let (_tmp, home, project) = workspace();
+    let settings = home.join(".codex/hooks.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{not valid json").unwrap();
 
-    let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
+    ironlint(&home, &project)
+        .args(["init", "--uninstall", "--yes"])
         .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8(out).unwrap();
-    assert!(
-        !s.contains("Select harnesses"),
-        "explicit --harness must skip the multi-select UI:\n{s}"
-    );
-    assert!(
-        home.join(".config/ironlint/adapters/codex/hook.sh")
-            .exists(),
-        "codex hook should be installed"
-    );
-}
+        .code(3)
+        .stdout(predicates::str::contains("codex (global) failed"));
 
-#[test]
-fn dry_run_does_not_enter_toggle() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    let project = tmp.path().join("proj");
-    std::fs::create_dir_all(&project).unwrap();
-
-    let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "codex", "--dry-run"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let s = String::from_utf8(out).unwrap();
-    assert!(
-        !s.contains("Select harnesses"),
-        "dry-run must not enter the multi-select UI:\n{s}"
-    );
-    assert!(
-        !home
-            .join(".config/ironlint/adapters/codex/hook.sh")
-            .exists(),
-        "dry-run must not install anything"
-    );
-    assert!(
-        !project.join(".codex/hooks.json").exists(),
-        "dry-run writes nothing"
+    assert_eq!(
+        std::fs::read_to_string(settings).unwrap(),
+        "{not valid json"
     );
 }

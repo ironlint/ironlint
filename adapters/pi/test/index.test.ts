@@ -1,803 +1,204 @@
-import { test, describe, it, after } from "node:test"
+import { after, test } from "node:test"
 import assert from "node:assert/strict"
-import { normalizeEdits, blockReason, isPolicyFile } from "../src/index.ts"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, delimiter } from "node:path"
-import { execFileSync } from "node:child_process"
-import { computeProposedContent } from "../src/index.ts"
+import { delimiter, join } from "node:path"
+import { changedPaths, feedback } from "../src/index.ts"
 import ironlintExtension from "../src/index.ts"
 
-// --- normalizeEdits -------------------------------------------------------
+type Handler = (event: unknown) => Promise<unknown>
 
-test("normalizeEdits: batch edits[] array", () => {
-  const edits = normalizeEdits({
-    edits: [
-      { oldText: "a", newText: "x" },
-      { oldText: "b", newText: "y" },
-    ],
-  })
-  assert.deepEqual(edits, [
-    { oldText: "a", newText: "x" },
-    { oldText: "b", newText: "y" },
-  ])
-})
-
-test("normalizeEdits: legacy top-level oldText/newText", () => {
-  const edits = normalizeEdits({ oldText: "a", newText: "x" })
-  assert.deepEqual(edits, [{ oldText: "a", newText: "x" }])
-})
-
-test("normalizeEdits: legacy oldText with missing newText defaults to empty", () => {
-  const edits = normalizeEdits({ oldText: "a" })
-  assert.deepEqual(edits, [{ oldText: "a", newText: "" }])
-})
-
-test("normalizeEdits: malformed (no edits, no oldText) returns null", () => {
-  assert.equal(normalizeEdits({ content: "whatever" }), null)
-})
-
-test("normalizeEdits: edits[] with a non-string member returns null", () => {
-  assert.equal(normalizeEdits({ edits: [{ oldText: "a" }] as never }), null)
-})
-
-test("normalizeEdits: empty edits[] returns null", () => {
-  assert.equal(normalizeEdits({ edits: [] }), null)
-})
-
-// --- blockReason ----------------------------------------------------------
-
-test("blockReason: extracts the message from a json verdict", () => {
-  const json = JSON.stringify({
-    status: "block",
-    blocks: [{ gate: "no-panic", file: "f.rs", message: "no panics in source" }],
-  })
-  assert.equal(blockReason(json), "no panics in source")
-})
-
-test("blockReason: joins multiple block messages with newlines", () => {
-  const json = JSON.stringify({ blocks: [{ message: "first" }, { message: "second" }] })
-  assert.equal(blockReason(json), "first\nsecond")
-})
-
-test("blockReason: non-json stdout falls back to a generic reason", () => {
-  assert.equal(blockReason("panic! detected\n"), "policy violation")
-})
-
-test("blockReason: a json verdict with no block messages falls back", () => {
-  assert.equal(blockReason(JSON.stringify({ blocks: [] })), "policy violation")
-})
-
-test("blockReason: a non-string message is filtered out, not coerced", () => {
-  // Guards the `typeof m === "string"` predicate: a malformed verdict must not
-  // surface `42` (or `"undefined"`) as the reason — it falls back instead.
-  assert.equal(blockReason(JSON.stringify({ blocks: [{ message: 42 }] })), "policy violation")
-})
-
-// --- isPolicyFile (gates→scripts) ----------------------------------------
-
-describe("isPolicyFile (gates→scripts)", () => {
-  const root = "/proj"
-
-  it("matches the config file by basename", () => {
-    assert.equal(isPolicyFile("/proj/.ironlint.yml", root), true)
-    assert.equal(isPolicyFile(".ironlint.yml", root), true)
-  })
-
-  it("matches files under .ironlint/scripts/ anchored to project root", () => {
-    assert.equal(isPolicyFile("/proj/.ironlint/scripts/lint.sh", root), true)
-    assert.equal(isPolicyFile("/proj/.ironlint/scripts/sub/x.sh", root), true)
-  })
-
-  it("does NOT match a .ironlint/scripts/ path outside the project root", () => {
-    assert.equal(isPolicyFile("/proj/src/.ironlint/scripts/foo.sh", root), false)
-  })
-
-  it("does NOT match a legacy .ironlint/gates/ path (renamed away)", () => {
-    assert.equal(isPolicyFile("/proj/.ironlint/gates/lint.sh", root), false)
-  })
-})
-
-// --- computeProposedContent -----------------------------------------------
-
-test("computeProposedContent: write returns the full body (new file ok)", () => {
-  assert.equal(
-    computeProposedContent("write", "/nonexistent/new.ts", { content: "hello\n" }),
-    "hello\n",
-  )
-})
-
-test("computeProposedContent: write with non-string content returns null", () => {
-  assert.equal(
-    computeProposedContent("write", "/nonexistent/new.ts", {} as never),
-    null,
-  )
-})
-
-test("computeProposedContent: edit applies a single replacement", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-cpc-"))
-  try {
-    const file = join(dir, "a.txt")
-    writeFileSync(file, "hello world\n")
-    assert.equal(
-      computeProposedContent("edit", file, { oldText: "world", newText: "DEBUG" }),
-      "hello DEBUG\n",
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("computeProposedContent: edit applies a batch in order", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-cpc-"))
-  try {
-    const file = join(dir, "a.txt")
-    writeFileSync(file, "alpha beta\n")
-    assert.equal(
-      computeProposedContent("edit", file, {
-        edits: [
-          { oldText: "alpha", newText: "x" },
-          { oldText: "beta", newText: "y" },
-        ],
-      }),
-      "x y\n",
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("computeProposedContent: edit returns null when file does not exist", () => {
-  assert.equal(
-    computeProposedContent("edit", "/nonexistent/missing.txt", {
-      oldText: "a",
-      newText: "b",
-    }),
-    null,
-  )
-})
-
-test("computeProposedContent: edit returns null when oldText is missing from file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-cpc-"))
-  try {
-    const file = join(dir, "a.txt")
-    writeFileSync(file, "hello world\n")
-    assert.equal(
-      computeProposedContent("edit", file, { oldText: "nope", newText: "x" }),
-      null,
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("computeProposedContent: edit returns null when oldText is non-unique", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-cpc-"))
-  try {
-    const file = join(dir, "a.txt")
-    writeFileSync(file, "a a\n")
-    assert.equal(
-      computeProposedContent("edit", file, { oldText: "a", newText: "x" }),
-      null,
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("computeProposedContent: unknown tool returns null", () => {
-  assert.equal(computeProposedContent("read", "/whatever", {}), null)
-})
-
-// Drive the exported factory with a fake `pi` that records handlers, then
-// invoke them with synthetic pi-shaped events against the real `ironlint`
-// binary (PATH includes target/release).
-
-type Handler = (event: unknown, ctx?: unknown) => unknown
 function loadExtension(root: string): Record<string, Handler> {
   const handlers: Record<string, Handler> = {}
-  const pi = {
-    on: (ev: string, h: Handler) => {
-      handlers[ev] = h
-    },
+  ironlintExtension({
     cwd: root,
-  }
-  // Cast through unknown — the fake only implements the surface the factory uses.
-  ironlintExtension(pi as unknown as Parameters<typeof ironlintExtension>[0])
+    on(event, handler) {
+      handlers[event] = handler as Handler
+    },
+  })
   return handlers
 }
 
-// Checks-format (0.4) policy: one check that greps the proposed content (piped
-// on stdin per the ABI) for `panic!` and blocks (any nonzero exit) with a
-// message on stdout.
-const IRONLINT_YML = `checks:
-  no-panic:
-    files: "*.rs"
-    run: 'if grep -q "panic!" ; then echo "no panics in source"; exit 1; fi'
-`
-
-// Plan 2 enforces trust at `check`: an unblessed config fails closed (exit 4
-// as of Task 3.2; the adapter blocks on it, see below).
-// Point XDG_CONFIG_HOME at one ephemeral store for the whole file so blessing
-// (execFileSync) and the adapter's own `ironlint check` (spawnSync — both inherit
-// process.env) share it, and the real ~/.config/ironlint/trust.json is untouched.
-const TRUST_STORE = mkdtempSync(join(tmpdir(), "ironlint-pi-xdg-"))
-const PRIOR_XDG = process.env["XDG_CONFIG_HOME"]
-process.env["XDG_CONFIG_HOME"] = TRUST_STORE
+const temp = mkdtempSync(join(tmpdir(), "ironlint-pi-v1-"))
+const bin = join(temp, "bin")
+mkdirSync(bin)
+const originalPath = process.env.PATH ?? ""
+process.env.PATH = bin + delimiter + originalPath
 after(() => {
-  if (PRIOR_XDG === undefined) delete process.env["XDG_CONFIG_HOME"]
-  else process.env["XDG_CONFIG_HOME"] = PRIOR_XDG
-  rmSync(TRUST_STORE, { recursive: true, force: true })
+  process.env.PATH = originalPath
+  rmSync(temp, { recursive: true, force: true })
 })
 
-/** Bless `config` in the ephemeral trust store so `check` runs to a verdict. */
-function bless(config: string): void {
-  execFileSync("ironlint", ["trust", "--config", config])
-}
-
-function makeProject(): string {
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-proj-"))
-  mkdirSync(join(dir, "src"), { recursive: true })
-  writeFileSync(join(dir, ".ironlint.yml"), IRONLINT_YML)
-  bless(join(dir, ".ironlint.yml"))
-  return dir
-}
-
-test("tool_call: clean write passes (returns nothing), file never written", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "clean.rs")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
-      {},
-    )
-    assert.equal(result, undefined)
-    // --content - never writes to disk.
-    assert.equal(existsSync(file), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: write introducing panic blocks", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "dirty.rs")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.ok(typeof result?.reason === "string" && result.reason.length > 0)
-    assert.equal(existsSync(file), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: block reason is the gate message, not the raw JSON verdict", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "reason.rs")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    // pi surfaces `reason` verbatim to the user — it must be the gate's stdout
-    // message, not the `--format json` Verdict blob the CLI prints.
-    assert.equal(result?.reason, "no panics in source")
-    assert.ok(!result?.reason?.includes("schema_version"))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: edit introducing panic blocks; on-disk file untouched", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "edit.rs")
-    writeFileSync(file, "fn a() {}\n")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "edit", input: { path: file, oldText: "fn a() {}", newText: "fn a() { panic!(); }" } },
-      {},
-    ) as { block?: boolean } | undefined
-    assert.equal(result?.block, true)
-    // --content - means the gate never writes; pi's real edit was blocked.
-    assert.equal(readFileSync(file, "utf8"), "fn a() {}\n")
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: multi-edit batch is simulated and blocks", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "batch.rs")
-    writeFileSync(file, "fn a() {}\nfn b() {}\n")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      {
-        toolName: "edit",
-        input: {
-          path: file,
-          edits: [
-            { oldText: "fn a() {}", newText: "fn a() { let _ = 1; }" },
-            { oldText: "fn b() {}", newText: "fn b() { panic!(); }" },
-          ],
-        },
-      },
-      {},
-    ) as { block?: boolean } | undefined
-    assert.equal(result?.block, true)
-    assert.equal(readFileSync(file, "utf8"), "fn a() {}\nfn b() {}\n")
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: legacy top-level oldText/newText edit blocks", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "legacy.rs")
-    writeFileSync(file, "fn a() {}\n")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "edit", input: { path: file, oldText: "fn a() {}", newText: "fn a() { panic!(); }" } },
-      {},
-    ) as { block?: boolean } | undefined
-    assert.equal(result?.block, true)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: edit with unmatched oldText skips the gate (no false block)", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "src", "nomatch.rs")
-    writeFileSync(file, "fn a() {}\n")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "edit", input: { path: file, oldText: "does_not_exist", newText: "fn a() { panic!(); }" } },
-      {},
-    )
-    assert.equal(result, undefined)
-    assert.equal(readFileSync(file, "utf8"), "fn a() {}\n")
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: non-gated tools (read) are ignored", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    assert.equal(
-      handlers.tool_call!({ toolName: "read", input: { path: "anything" } }, {}),
-      undefined,
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-// --- tool_call: bash branch (bash-gate self-trust prevention) ---------------
-// `bash` is now gated by the bash-gate branch, which shells out to
-// `ironlint gate-bash` (the shared Rust matcher). It runs BEFORE the
-// config-existence check — the bash-gate must fire even with no .ironlint.yml,
-// since that's exactly when an agent is most motivated to run `ironlint trust`.
-// Block contract: return { block: true, reason } (same as the write/edit path).
-
-test("tool_call: bash 'ironlint trust' blocks", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "bash", input: { command: "ironlint trust" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.match(result?.reason ?? "", /ironlint trust must be run by a human/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: bash redirect to .ironlint.yml blocks", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "bash", input: { command: "echo x > .ironlint.yml" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.match(result?.reason ?? "", /policy files must be edited/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: bash 'git commit --no-verify' blocks", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "bash", input: { command: "git commit --no-verify -m x" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.match(result?.reason ?? "", /git commit bypass/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: bash 'ls -la' allows (through gate)", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    // 'ls -la' reaches the real `ironlint gate-bash` (no pre-filter) and the
-    // matcher allows it → no block result.
-    assert.equal(
-      handlers.tool_call!({ toolName: "bash", input: { command: "ls -la" } }, {}),
-      undefined,
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: bash 'ironlint trust' blocks even with no .ironlint.yml", () => {
-  // The bash-gate must fire regardless of config presence — a config-less
-  // project is exactly when the agent is most motivated to self-trust.
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-noconfig-bash-"))
-  try {
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "bash", input: { command: "ironlint trust" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.match(result?.reason ?? "", /ironlint trust must be run by a human/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: bash fails closed when ironlint is missing", () => {
-  // No ironlint on PATH → spawn fails. The bash-gate must fail CLOSED (block),
-  // not allow — a broken deny check is never a silent allow.
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-nobin-"))
-  const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-emptybin-"))
-  const origPath = process.env["PATH"] ?? ""
-  try {
-    // PATH with ONLY the empty bin dir — no `ironlint` resolvable anywhere.
-    // (Scrubbing the ambient PATH instead would leak a global install living
-    // in a dir whose name doesn't contain "ironlint", e.g. ~/.cargo/bin.)
-    process.env["PATH"] = bin
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "bash", input: { command: "ironlint trust" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.match(result?.reason ?? "", /fail-closed/)
-  } finally {
-    process.env["PATH"] = origPath
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(bin, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: missing path is a no-op", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    assert.equal(handlers.tool_call!({ toolName: "edit", input: {} }, {}), undefined)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: no-op when .ironlint.yml is absent", () => {
-  // Spec §11: a project without a config silently no-ops (safe global install).
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-noconfig-"))
-  mkdirSync(join(dir, "src"), { recursive: true })
-  try {
-    const file = join(dir, "src", "dirty.rs")
-    const handlers = loadExtension(dir)
-    assert.equal(
-      handlers.tool_call!(
-        { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
-        {},
-      ),
-      undefined,
-    )
-    assert.equal(existsSync(file), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: gate activates after .ironlint.yml is created mid-session", () => {
-  // Regression: the existence check runs per-invocation, so a project that
-  // becomes an ironlint project after the extension loads starts gating with
-  // no restart.
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-late-"))
-  mkdirSync(join(dir, "src"), { recursive: true })
-  try {
-    const file = join(dir, "src", "dirty.rs")
-    const handlers = loadExtension(dir)
-    // No config yet -> no gating.
-    assert.equal(
-      handlers.tool_call!(
-        { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
-        {},
-      ),
-      undefined,
-    )
-    // Create + bless the config, re-invoke the SAME handler closure.
-    writeFileSync(join(dir, ".ironlint.yml"), IRONLINT_YML)
-    bless(join(dir, ".ironlint.yml"))
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
-      {},
-    ) as { block?: boolean } | undefined
-    assert.equal(result?.block, true)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: .ironlint.yml self-edit short-circuits (R3) — no ironlint invocation", () => {
-  // Write a deliberately invalid config so ANY real ironlint invocation would
-  // exit non-zero and the adapter would log an "internal error". A clean run
-  // (no such log) proves the basename short-circuit fired before ironlint ran.
-  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-policy-"))
-  const errs: string[] = []
-  const origErr = console.error
-  console.error = (...args: unknown[]) => {
-    errs.push(args.map(String).join(" "))
-  }
-  try {
-    writeFileSync(join(dir, ".ironlint.yml"), "checks: [unterminated\n")
-    const handlers = loadExtension(dir)
-    const file = join(dir, ".ironlint.yml")
-    assert.equal(
-      handlers.tool_call!({ toolName: "write", input: { path: file, content: "anything\n" } }, {}),
-      undefined,
-    )
-    assert.ok(!errs.join("\n").includes("internal error"))
-  } finally {
-    console.error = origErr
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: .bully.yml self-edit short-circuits (R3)", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, ".bully.yml")
-    const handlers = loadExtension(dir)
-    assert.equal(
-      handlers.tool_call!({ toolName: "write", input: { path: file, content: "anything\n" } }, {}),
-      undefined,
-    )
-    assert.equal(existsSync(file), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: bare relative .ironlint.yml self-edit short-circuits (R3)", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    assert.equal(
-      handlers.tool_call!(
-        { toolName: "write", input: { path: ".ironlint.yml", content: "anything\n" } },
-        {},
-      ),
-      undefined,
-    )
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-// --- tool_call: exit-3 fail-open / fail-closed ----------------------------
-// A real exit 3 (engine-internal error) is forced via a fake `ironlint` on PATH
-// that exits 3 — a semantic/session config no longer reaches the engine (it is
-// rejected at load with exit 1), so we cannot provoke exit 3 through config.
-
-test("tool_call: exit-3 fails open by default (allows the edit)", () => {
-  const dir = makeProject()
-  const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-fakebin-"))
-  const origPath = process.env["PATH"] ?? ""
-  delete process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"]
-  const origErr = console.error
-  console.error = () => {}
-  try {
-    const fake = join(bin, "ironlint")
-    writeFileSync(fake, "#!/bin/sh\necho 'engine error' 1>&2\nexit 3\n")
-    chmodSync(fake, 0o755)
-    process.env["PATH"] = bin + delimiter + origPath
-
-    const file = join(dir, "src", "x.rs")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
-      {},
-    )
-    assert.equal(result, undefined) // fail-open
-  } finally {
-    console.error = origErr
-    process.env["PATH"] = origPath
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(bin, { recursive: true, force: true })
-  }
-})
-
-test("tool_call: exit-3 fails closed under IRONLINT_FAIL_CLOSED_ON_INTERNAL=1", () => {
-  const dir = makeProject()
-  const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-fakebin-"))
-  const origPath = process.env["PATH"] ?? ""
-  const hadClosed = process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"]
-  process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] = "1"
-  const origErr = console.error
-  console.error = () => {}
-  try {
-    const fake = join(bin, "ironlint")
-    writeFileSync(fake, "#!/bin/sh\necho 'engine error' 1>&2\nexit 3\n")
-    chmodSync(fake, 0o755)
-    process.env["PATH"] = bin + delimiter + origPath
-
-    const file = join(dir, "src", "x.rs")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
-      {},
-    ) as { block?: boolean } | undefined
-    assert.equal(result?.block, true) // fail-closed
-  } finally {
-    console.error = origErr
-    process.env["PATH"] = origPath
-    if (hadClosed === undefined) delete process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"]
-    else process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] = hadClosed
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(bin, { recursive: true, force: true })
-  }
-})
-
-// --- tool_call: exit-4 (untrusted config) always blocks --------------------
-// A real exit 4 (Task 3.2 / Finding C3: an untrusted/tampered config) is
-// forced the same way exit 3 is above — via a fake `ironlint` on PATH — since
-// a real trust mismatch would require racing the shared XDG trust store this
-// file's other tests depend on. Unlike exit 3, there is no fail-open branch:
-// exit 4 must ALWAYS block, with the fixed trust message as the reason.
-
-test("tool_call: exit-4 (untrusted config) blocks with the trust message", () => {
-  const dir = makeProject()
-  const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-fakebin-"))
-  const origPath = process.env["PATH"] ?? ""
-  const origErr = console.error
-  console.error = () => {}
-  try {
-    const fake = join(bin, "ironlint")
-    writeFileSync(fake, "#!/bin/sh\necho 'not trusted' 1>&2\nexit 4\n")
-    chmodSync(fake, 0o755)
-    process.env["PATH"] = bin + delimiter + origPath
-
-    const file = join(dir, "src", "x.rs")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
-      {},
-    ) as { block?: boolean; reason?: string } | undefined
-    assert.equal(result?.block, true)
-    assert.match(result?.reason ?? "", /not trusted/)
-    assert.match(result?.reason ?? "", /ironlint trust/)
-  } finally {
-    console.error = origErr
-    process.env["PATH"] = origPath
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(bin, { recursive: true, force: true })
-  }
-})
-
-// --- W4 pinned contract fixtures (docs/architecture.md) -----------
-//
-// The adapter's happy-shape payloads are pinned by LIVE-CAPTURED fixtures in
-// `adapters/pi/fixtures/` (provenance-stamped; see the README there). This
-// meta-test loads every fixture present and asserts the provenance header and
-// the fields the adapter reads. Three capture states: captured (check each
-// fixture), README-only = capture pending DECLARED (warn, pass), and
-// undeclared-empty (no README, no fixtures) = warn locally / hard fail in CI.
-
-import { readdirSync } from "node:fs"
-import { dirname } from "node:path"
-import { fileURLToPath } from "node:url"
-
-function fixtureCaptureStatus(dir: string): "captured" | "pending-declared" | "undeclared-empty" {
-  let files: string[] = []
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".json"))
-  } catch {
-    files = []
-  }
-  if (files.length > 0) return "captured"
-  if (existsSync(join(dir, "README.md"))) return "pending-declared"
-  return "undeclared-empty"
-}
-
-function assertFixtureCaptureStatus(dir: string, harness: string, isCI: boolean): string {
-  const status = fixtureCaptureStatus(dir)
-  if (status === "pending-declared") {
-    console.error(
-      `W4-PARTIAL: adapters/${harness}/fixtures capture pending (README declares it) — see fixtures/README.md`,
-    )
-  } else if (status === "undeclared-empty") {
-    const msg =
-      `undeclared-empty fixtures dir: restore README.md (declare capture pending) ` +
-      `or run the capture procedure in fixtures/README.md`
-    if (isCI) throw new Error(msg)
-    console.error("WARNING: " + msg)
-  }
-  return status
-}
-
-test("fixtures: every captured payload carries provenance + fields the adapter reads", () => {
-  const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures")
-  const status = assertFixtureCaptureStatus(
-    fixturesDir,
-    "pi",
-    !!process.env.CI && process.env.CI !== "false",
+function fakeIronLint(exitCode: number, stdout = "", stderr = "", delay = ""): void {
+  const file = join(bin, "ironlint")
+  writeFileSync(
+    file,
+    `#!/bin/sh
+${delay}
+printf '%s' '${stdout.replace(/'/g, "'\\\"'\\\"'")}'
+printf '%s' '${stderr.replace(/'/g, "'\\\"'\\\"'")}' >&2
+exit ${exitCode}
+`,
   )
-  if (status !== "captured") return
-  const files = readdirSync(fixturesDir).filter((f) => f.endsWith(".json"))
-  for (const f of files) {
-    const v = JSON.parse(readFileSync(join(fixturesDir, f), "utf8"))
-    assert.ok(v._provenance, `${f}: missing _provenance`)
-    assert.equal(typeof v._provenance.harness, "string", `${f}: provenance.harness`)
-    assert.ok(v._provenance.harness_version, `${f}: provenance.harness_version required`)
-    assert.ok(v._provenance.captured_at, `${f}: provenance.captured_at required`)
-    const input = v.payload
-    assert.ok(input && typeof input === "object", `${f}: payload must be an object`)
-    // The adapter reads at least one of these tool-input shapes (PiToolInput).
-    const reads =
-      typeof input.path === "string" ||
-      typeof input.file_path === "string" ||
-      typeof input.content === "string" ||
-      typeof input.command === "string" ||
-      Array.isArray(input.edits) ||
-      typeof input.oldText === "string"
-    assert.ok(reads, `${f}: payload has no field the pi adapter reads`)
+  chmodSync(file, 0o755)
+}
+
+function project(): string {
+  const root = mkdtempSync(join(tmpdir(), "ironlint-pi-project-"))
+  writeFileSync(join(root, ".ironlint.yml"), "version: 1\nchecks: {}\n")
+  return root
+}
+
+const violation = JSON.stringify({
+  results: [{ id: "no-panic", outcome: "violation", reason: "panic found" }],
+})
+
+test("changedPaths includes delete paths and both rename endpoints", () => {
+  assert.deepEqual(changedPaths("delete", { path: "src/dead.rs" }), ["src/dead.rs"])
+  assert.deepEqual(changedPaths("rename", { oldPath: "src/old.rs", newPath: "src/new.rs" }), [
+    "src/old.rs",
+    "src/new.rs",
+  ])
+})
+
+test("feedback names the failed check and diagnostic", () => {
+  assert.equal(feedback(violation, "fallback"), "no-panic: panic found")
+})
+
+test("tool_result keeps a failing write, reports a violation, and gives a reproduction command", async () => {
+  fakeIronLint(2, violation)
+  const root = project()
+  try {
+    const result = (await loadExtension(root).tool_result!({
+      toolName: "write",
+      input: { path: "src/main.rs" },
+      content: [{ type: "text", text: "Successfully wrote src/main.rs" }],
+      isError: false,
+    })) as { content?: Array<{ text?: string }> }
+    const text = result.content?.at(-1)?.text ?? ""
+    assert.match(text, /no-panic: panic found/)
+    assert.match(text, /Reproduce: ironlint check --event change/)
+    assert.match(text, /--file src\/main.rs/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
-test("fixtures: undeclared-empty fails hard under CI, declared-pending passes", () => {
-  const base = mkdtempSync(join(tmpdir(), "ironlint-pi-fixtures-"))
+test("reproduction command does not evaluate shell syntax in a path", async () => {
+  fakeIronLint(2, violation)
+  const root = project()
+  const marker = join(root, "owned")
   try {
-    const pending = join(base, "pending")
-    mkdirSync(pending)
-    writeFileSync(join(pending, "README.md"), "capture pending\n")
-    assert.equal(fixtureCaptureStatus(pending), "pending-declared")
-    assert.doesNotThrow(() => assertFixtureCaptureStatus(pending, "pi", true))
+    const result = (await loadExtension(root).tool_result!({
+      toolName: "write",
+      input: { path: `src/it's-$(touch ${marker}).rs` },
+      content: [],
+      isError: false,
+    })) as { content?: Array<{ text?: string }> }
+    const text = result.content?.at(-1)?.text ?? ""
+    const command = text.split("\nReproduce: ")[1]?.split("\n")[0] ?? ""
 
-    const bare = join(base, "bare")
-    mkdirSync(bare)
-    assert.equal(fixtureCaptureStatus(bare), "undeclared-empty")
-    assert.throws(() => assertFixtureCaptureStatus(bare, "pi", true), /undeclared-empty/)
-    assert.doesNotThrow(() => assertFixtureCaptureStatus(bare, "pi", false))
-
-    assert.equal(fixtureCaptureStatus(join(base, "missing")), "undeclared-empty")
+    assert.notEqual(command, "")
+    assert.equal(spawnSync("sh", ["-c", command], { cwd: root }).status, 2)
+    assert.equal(existsSync(marker), false)
   } finally {
-    rmSync(base, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("tool_result includes both rename endpoints", async () => {
+  fakeIronLint(2, violation)
+  const root = project()
+  try {
+    const result = (await loadExtension(root).tool_result!({
+      toolName: "rename",
+      input: { oldPath: "src/old.rs", newPath: "src/new.rs" },
+      content: [],
+      isError: false,
+    })) as { content?: Array<{ text?: string }> }
+    const text = result.content?.at(-1)?.text ?? ""
+    assert.match(text, /--file src\/old.rs --file src\/new.rs/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("tool_result reports evaluator failures without vetoing a later edit", async () => {
+  fakeIronLint(3, "", "deadline exceeded")
+  const root = project()
+  try {
+    const result = (await loadExtension(root).tool_result!({
+      toolName: "edit",
+      input: { path: "src/main.rs" },
+      content: [],
+      isError: false,
+    })) as { content?: Array<{ text?: string }>; isError?: boolean }
+    assert.match(result.content?.at(-1)?.text ?? "", /could not evaluate this change: deadline exceeded/)
+    assert.equal(result.isError, undefined)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("tool_result suppresses successful feedback and ignores failed writes", async () => {
+  fakeIronLint(0)
+  const root = project()
+  try {
+    const handlers = loadExtension(root)
+    assert.equal(
+      await handlers.tool_result!({ toolName: "write", input: { path: "src/a.rs" }, content: [], isError: false }),
+      undefined,
+    )
+    assert.equal(
+      await handlers.tool_result!({ toolName: "write", input: { path: "src/a.rs" }, content: [], isError: true }),
+      undefined,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("tool_result skips a known-empty batch", async () => {
+  fakeIronLint(2, violation)
+  const root = project()
+  try {
+    assert.equal(
+      await loadExtension(root).tool_result!({ toolName: "batch", input: { paths: [] }, content: [], isError: false }),
+      undefined,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("tool_result labels feedback superseded when a newer edit arrives", async () => {
+  fakeIronLint(2, violation, "", "sleep 0.1")
+  const root = project()
+  try {
+    const handler = loadExtension(root).tool_result!
+    const first = handler({ toolName: "write", input: { path: "src/first.rs" }, content: [], isError: false })
+    const second = handler({ toolName: "write", input: { path: "src/second.rs" }, content: [], isError: false })
+    const firstResult = (await first) as { content?: Array<{ text?: string }> }
+    await second
+    assert.match(firstResult.content?.at(-1)?.text ?? "", /superseded by a newer edit/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("tool_result supersedes pending feedback when a newer mutation deletes the policy", async () => {
+  fakeIronLint(2, violation, "", "sleep 0.1")
+  const root = project()
+  try {
+    const handler = loadExtension(root).tool_result!
+    const first = handler({ toolName: "write", input: { path: "src/first.rs" }, content: [], isError: false })
+    rmSync(join(root, ".ironlint.yml"))
+    await handler({ toolName: "delete", input: { path: ".ironlint.yml" }, content: [], isError: false })
+
+    const firstResult = (await first) as { content?: Array<{ text?: string }> }
+    assert.match(firstResult.content?.at(-1)?.text ?? "", /superseded by a newer edit/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })

@@ -84,7 +84,16 @@ fn selects(check: &V1Check, event: V1Event, changed_paths: Option<&[PathBuf]>) -
 }
 
 pub(crate) fn parse_v1_str(input: &str) -> Result<V1Config> {
-    serde_yaml::from_str::<serde_yaml::Value>(input).context("parsing v1 config mappings")?;
+    let value =
+        serde_yaml::from_str::<serde_yaml::Value>(input).context("parsing v1 config mappings")?;
+    if !value
+        .as_mapping()
+        .is_some_and(|mapping| mapping.contains_key(serde_yaml::Value::String("version".into())))
+    {
+        return Err(anyhow!(
+            "unsupported unversioned config; add `version: 1` and use the v1 format shown by `ironlint schema`"
+        ));
+    }
     let config: V1Config = serde_yaml::from_str(input).context("parsing v1 config")?;
     validate(&config)?;
     Ok(config)
@@ -94,6 +103,13 @@ pub(crate) fn parse_v1_file(path: &Path) -> Result<V1Config> {
     let input = std::fs::read_to_string(path)
         .with_context(|| format!("reading v1 config {}", path.display()))?;
     parse_v1_str(&input)
+}
+
+/// Parse a v1 policy from the exact approved bytes instead of a live path, so
+/// evaluation cannot observe a policy the operator never approved.
+pub(crate) fn parse_v1_bytes(bytes: &[u8]) -> Result<V1Config> {
+    let input = std::str::from_utf8(bytes).context("v1 config is not valid UTF-8")?;
+    parse_v1_str(input)
 }
 
 fn validate(config: &V1Config) -> Result<()> {
@@ -113,7 +129,7 @@ fn validate(config: &V1Config) -> Result<()> {
         if id.is_empty() {
             return Err(anyhow!("check id must be nonempty"));
         }
-        if !super::parser::run_has_executable_content(&check.run) {
+        if !run_has_executable_content(&check.run) {
             return Err(anyhow!(
                 "check `{id}` run must contain an executable command"
             ));
@@ -141,6 +157,13 @@ fn validate_events(id: &str, events: &[V1Event]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_has_executable_content(run: &str) -> bool {
+    run.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with('#')
+    })
 }
 
 fn deserialize_files<'de, D>(deserializer: D) -> std::result::Result<Option<Vec<String>>, D::Error>

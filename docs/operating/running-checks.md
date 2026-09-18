@@ -1,6 +1,6 @@
-# Running v1 checks
+# Running checks
 
-For a `version: 1` policy:
+For a policy with `version: 1`:
 
 ```sh
 ironlint check                                      # all acceptance checks
@@ -10,23 +10,21 @@ ironlint check --event change                       # changed paths unknown
 ironlint check --config /work/policy.yml --root /work/candidate --event accept
 ```
 
-Commands run from `--root` (current directory by default), with stdin closed.
-Config discovery does not choose the candidate root for you. Relative trigger
-paths resolve under this root. Deleted paths are valid; escaping paths are errors.
+Commands run from `--root` (the current directory by default), with stdin
+closed. A relative `.ironlint.yml` can be found in a parent directory up to the
+Git boundary, but that does not change the root. Relative trigger paths resolve
+under `--root`. Deleted paths are valid; escaping paths are errors.
 
-`accept` runs every check. Repeatable `--file` is only valid with explicit
-`--event change`. Omitting `--file` means unknown changes. Only the core API can
-receive a known-empty path set.
+`accept` runs every check. Repeatable `--file` is valid only with explicit
+`--event change`. Omitting `--file` means changed paths are unknown. An
+integration can provide a known-empty path set.
 
-V1 rejects `--diff`, `--content`, `--check`, `--force`, `--require-match`, and
-inline `--explain`. Use the separate read-only `ironlint explain` command.
-There is no acceptance filtering or force-pass flag.
+Use the separate read-only `ironlint explain` command to inspect selection.
 
-See [Verdict JSON](../reference/verdict-json.md) for exits and results. A change
+See [JSON results](../reference/verdict-json.md) for exits and results. A change
 invocation can return exit 0 with `not_run`; acceptance needs a complete pass.
-`IRONLINT_FAIL_CLOSED_ON_INTERNAL` and `IRONLINT_TIMEOUT` do not change v1 semantics.
 
 Default execution limits are 30 seconds per check and 300 seconds per batch.
-The runner continues after violations, stops on execution errors or an exhausted
-budget, and reports remaining selected checks as unrun. Checks execute serially
-once each, including for a multi-file batch.
+IronLint continues after violations, stops on execution errors or an exhausted
+budget, and reports selected checks left unrun. Checks execute serially once
+each, including for a multi-file batch.

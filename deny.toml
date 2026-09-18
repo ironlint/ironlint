@@ -1,4 +1,4 @@
-# cargo-deny configuration — supply-chain gate (readiness review S6 / Task 3.7).
+# cargo-deny configuration for dependency advisories, licenses, and bans.
 #
 # Run locally with: cargo deny check advisories licenses bans
 # CI runs the same three checks (see .github/workflows/ci.yml, `deny` job).

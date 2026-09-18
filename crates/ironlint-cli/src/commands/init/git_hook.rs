@@ -1,10 +1,10 @@
-//! The git pre-commit "floor" hook installed by `ironlint init` and removed
+//! The optional git pre-commit hook installed by `ironlint init --git-hook` and removed
 //! by `ironlint init --uninstall` (see docs/architecture.md).
 //!
 //! One hook covers every committer — supported agents, unsupported agents,
 //! humans — independent of any harness adapter being installed, present, or
-//! alive: git itself fires it at the `git commit` boundary, and it runs
-//! `ironlint check --diff` over the staged change set.
+//! alive. Git fires it at the commit boundary, where it runs a complete v1
+//! acceptance evaluation against the worktree.
 //!
 //! Chaining, not capture: the hook is a marker-bracketed block appended into
 //! `.git/hooks/pre-commit` (via `git rev-parse --git-common-dir`, so linked
@@ -39,7 +39,7 @@ pub enum HookState {
     NotFound,
 }
 
-/// ANSI-free labels for the init plan/summary lines ("git floor:").
+/// ANSI-free labels for the init plan/summary lines.
 pub fn summarize(state: &HookState, uninstalling: bool) -> String {
     match state {
         HookState::Installed(p) => {
@@ -95,7 +95,7 @@ pub fn hook_path(project_dir: &Path) -> Result<Option<PathBuf>> {
 pub fn install(project_dir: &Path, bin: &Path) -> Result<HookState> {
     let Some(hook) = hook_path(project_dir)? else {
         return Ok(HookState::Skipped(
-            "not inside a git work tree (no floor installed)".into(),
+            "not inside a git work tree (no hook installed)".into(),
         ));
     };
     let block = hook_block(bin);
@@ -140,7 +140,7 @@ pub fn install(project_dir: &Path, bin: &Path) -> Result<HookState> {
 pub fn uninstall(project_dir: &Path) -> Result<HookState> {
     let Some(hook) = hook_path(project_dir)? else {
         return Ok(HookState::Skipped(
-            "not inside a git work tree (no floor to remove)".into(),
+            "not inside a git work tree (no hook to remove)".into(),
         ));
     };
     match std::fs::read_to_string(&hook) {
@@ -180,35 +180,16 @@ pub fn hook_block(bin: &Path) -> String {
     format!(
         "{MARKER_START}\n\
          # Managed by ironlint init — remove with `ironlint init --uninstall`.\n\
-         diff_file=\"${{TMPDIR:-/tmp}}/ironlint-precommit.$$\"\n\
-         trap 'rm -f \"$diff_file\"' EXIT\n\
-         git diff --cached --diff-filter=ACMR --no-color --src-prefix=a/ --dst-prefix=b/ >\"$diff_file\" || exit 0\n\
-         [ -s \"$diff_file\" ] || exit 0\n\
          BIN=\"${{IRONLINT_BIN:-}}\"\n\
          [ -n \"$BIN\" ] || BIN={0}\n\
          [ -x \"$BIN\" ] || BIN=\"$(command -v ironlint || true)\"\n\
          if [ -z \"$BIN\" ]; then\n\
-           echo \"ironlint floor: binary not found; allowing commit (reinstall: ironlint init)\" >&2\n\
-           exit 0\n\
+           echo \"ironlint: binary not found; blocking commit\" >&2\n\
+           exit 1\n\
          fi\n\
-                  # Round-2 review: a deleted .ironlint.yml would otherwise block every\n\
-         # commit with exit 1 forever (spec-locked config-error mapping).\n\
-         # Zero-cost in non-ironlint repos; unwedges the config-deleted case.\n\
-         [ -f .ironlint.yml ] || exit 0\n\
-\"$BIN\" check --diff \"$diff_file\"\n\
-         code=$?\n\
-         case \"$code\" in\n\
-           0) exit 0 ;;\n\
-           3) if [ \"${{IRONLINT_FAIL_CLOSED_ON_INTERNAL:-0}}\" = \"1\" ]; then\n\
-                echo \"ironlint floor: internal error — blocking (IRONLINT_FAIL_CLOSED_ON_INTERNAL=1)\" >&2\n\
-                exit 1\n\
-              fi\n\
-              echo \"ironlint floor: internal error — allowing commit\" >&2\n\
-              exit 0 ;;\n\
-           4) echo \"ironlint floor: config/checks untrusted — run: ironlint trust\" >&2\n\
-              exit 1 ;;\n\
-           *) exit \"$code\" ;;\n\
-         esac\n\
+         ROOT=\"$(git rev-parse --show-toplevel)\" || exit 1\n\
+         [ -f \"$ROOT/.ironlint.yml\" ] || exit 0\n\
+         \"$BIN\" check --event accept --root \"$ROOT\" --config \"$ROOT/.ironlint.yml\"\n\
          {MARKER_END}",
         sh_quote(bin)
     )
@@ -484,18 +465,13 @@ mod tests {
     }
 
     #[test]
-    fn hook_block_pins_exit_mapping_contract() {
+    fn hook_block_requires_complete_acceptance() {
         let block = hook_block(Path::new("/bin/ironlint"));
-        // W1-R4 exit mapping is locked: 2/1/4 block (4 with trust
-        // remediation), 3 fail-open honoring IRONLINT_FAIL_CLOSED_ON_INTERNAL.
-        assert!(block.contains(
-            "git diff --cached --diff-filter=ACMR --no-color --src-prefix=a/ --dst-prefix=b/"
-        ));
-        assert!(block.contains("check --diff \"$diff_file\""));
-        assert!(block.contains("IRONLINT_FAIL_CLOSED_ON_INTERNAL"));
-        assert!(block.contains("ironlint trust"));
-        assert!(block.contains("*) exit \"$code\""));
-        assert!(block.contains("binary not found; allowing commit"));
+        assert!(block.contains("check --event accept --root \"$ROOT\""));
+        assert!(block.contains("--config \"$ROOT/.ironlint.yml\""));
+        assert!(block.contains("binary not found; blocking commit"));
+        assert!(!block.contains("--diff"));
+        assert!(!block.contains("FAIL_CLOSED"));
     }
 
     #[test]

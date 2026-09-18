@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use super::policy_hash::{
-    classify_entry, closure_script_dirs, collect_gate_files, compute_hash, compute_worktree_hash,
-    config_paths, EntryKind,
+    classify_entry, collect_gate_files, compute_hash, compute_worktree_hash, config_paths,
+    policy_script_dirs, EntryKind,
 };
 use super::worktree::WorktreeScope;
 
@@ -21,7 +21,7 @@ pub struct BlessedSummary {
     /// The authoritative digest, `"sha256:<hex>"`, identical to what
     /// [`compute_hash`] would return for the same `config_path`.
     pub config_hash: String,
-    /// Number of resolved checks (post-extends merge).
+    /// Number of configured checks.
     pub checks: usize,
     /// Every file relative path under `.ironlint/scripts/`, sorted and deduped.
     pub scripts: Vec<String>,
@@ -42,9 +42,9 @@ pub struct BlessedSummary {
 /// misrepresent what was actually blessed.
 pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     let config_hash = compute_hash(config_path)?;
-    let v1 = crate::config::v1::parse_v1_file(config_path).ok();
+    let v1 = crate::config::v1::parse_v1_file(config_path)?;
     let config_paths = config_paths(config_path)?;
-    let script_dirs = closure_script_dirs(&config_paths);
+    let script_dirs = policy_script_dirs(&config_paths);
 
     let mut scripts: Vec<String> = Vec::new();
     for dir in &script_dirs {
@@ -63,16 +63,8 @@ pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     scripts.sort();
     scripts.dedup();
 
-    let checks = match &v1 {
-        Some(config) => config.checks.len(),
-        None => crate::config::extends::resolve(config_path)?.checks.len(),
-    };
-
-    let scope_path = if v1.is_some() {
-        &config_paths[0]
-    } else {
-        config_path
-    };
+    let checks = v1.checks.len();
+    let scope_path = &config_paths[0];
     let scope = match WorktreeScope::discover(scope_path) {
         Some(s) if policy_is_eligible(scope_path, &s).unwrap_or(false) => {
             "linked worktrees".to_string()
@@ -89,7 +81,7 @@ pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     })
 }
 
-/// True iff the resolved extends closure + scripts dirs are all under `scope.worktree_root`.
+/// True iff the policy and scripts are under `scope.worktree_root`.
 fn policy_is_eligible(config_path: &Path, scope: &WorktreeScope) -> Result<bool> {
     match compute_worktree_hash(config_path, scope)? {
         Some(_) => Ok(true),

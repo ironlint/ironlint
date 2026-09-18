@@ -1,12 +1,13 @@
 # IronLint
 
-Run your project's checks with consistent selection, timeouts, and machine-readable
-results. IronLint gives AI coding workflows a deterministic evaluation step using
-the same shell commands you run locally or in CI.
+IronLint runs the checks your project already trusts, so an AI coding workflow
+gets the same clear pass or fail result as a local command or CI job. Define the
+commands once in `.ironlint.yml`, then run them after a change or when work is
+ready to review.
 
-**V1 is in progress.** The evaluator and CLI below work today. External acceptance
-and one completed-edit feedback adapter are still to build. Current installers
-and adapters use the older write-hook protocol and do not provide v1 integration.
+It is for developers who want project rules to be executable instead of buried
+in prompts, review comments, or a checklist. IronLint does not invent rules or
+change files: it runs the commands you choose and reports their output.
 
 ```yaml
 version: 1
@@ -19,48 +20,46 @@ checks:
     run: cargo test --locked
 ```
 
-With this policy in `.ironlint.yml`, review its commands, then run:
+With that policy in the project root:
 
 ```sh
 ironlint validate
 ironlint trust
+ironlint check --event change --file src/lib.rs
 ironlint check --event accept --format json
-ironlint check --event change --file src/lib.rs --format json
 ```
 
-Acceptance evaluation runs every check once. Change evaluation runs opted-in
-checks whose trigger paths match. Commands inspect files on disk with stdin
-closed. The caller consumes the results and decides whether to accept the
-evaluated candidate. See [Getting started](docs/getting-started.md).
+`change` runs the fast checks that apply to known changed paths. `accept` runs
+every check, which makes it the command to use before treating a change as
+complete. Output is human-readable by default and available as JSON for tools.
 
-## Build the current source
+## Install from source
 
-From this checkout, with Rust installed:
+To build the version in this repository, install Rust 1.88 or newer and a POSIX
+`sh` (Git Bash or WSL on Windows).
 
 ```sh
+git clone https://github.com/ironlint/ironlint.git
+cd ironlint
 cargo install --locked --path crates/ironlint-cli
 ironlint --version
 ```
 
-Commands require `sh`; on Windows use Git Bash or WSL. Published binaries may
-predate v1. This documentation describes the current source checkout.
+## What to read next
 
-## Boundaries
+- [Get started](docs/getting-started.md): create and run your first policy.
+- [Write checks](docs/writing-checks/README.md): choose commands and limits.
+- [Run checks](docs/operating/running-checks.md): use `change` and `accept`.
+- [Policy reference](docs/reference/config-schema.md) and [CLI reference](docs/reference/cli.md).
+- [Execution consent](docs/security/trust.md): review policy commands before they run.
+- [AI-tool integrations](docs/adapters/README.md): optional adapter-specific setup.
 
-IronLint runs arbitrary policy commands; it is not a sandbox. Local trust records
-execution consent and detects managed policy/script changes. An external acceptance
-integration must protect policy, evaluator, publication credentials, and the exact
-revision it accepts. That integration is a release gate.
+## Safety
 
-V1 is a breaking release. Backward compatibility, automatic config conversion,
-and coordinated rollback are not planned. Removal of obsolete code and safe
-cleanup of installed IronLint hooks are tracked in the active plan.
+A policy can run arbitrary shell commands with your account's permissions.
+Review it before running `ironlint trust`; trust records your local approval and
+is renewed when the policy or a script under `.ironlint/scripts/` changes. It
+does not sandbox those commands, cover other files a command might invoke, or
+replace protections in your hosting or CI system.
 
-## Documentation and work
-
-- [Documentation](docs/README.md): current usage and reference.
-- [Architecture](docs/architecture.md): implemented flow, source map, and gaps.
-- [V1 contract](specs/2026-09-05-ironlint-v1-design.md): required release behavior.
-- [Implementation plan](plans/2026-09-05-ironlint-v1-implementation.md): next task and evidence.
-- [Agent instructions](AGENTS.md): validation and development rules.
-- [License](LICENSE): Apache 2.0.
+Licensed under [Apache 2.0](LICENSE).

@@ -13,7 +13,7 @@ fn show_resolved_config_default_tsv_row_per_check() {
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "version: 1\nchecks:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     )
     .unwrap();
 
@@ -58,7 +58,7 @@ fn show_resolved_config_lists_multiple_checks() {
     let cfg = dir.path().join(".ironlint.yml");
     std::fs::write(
         &cfg,
-        "checks:\n  alpha:\n    files: [\"*.rs\"]\n    run: \"true\"\n  beta:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  alpha:\n    files: [\"*.rs\"]\n    run: \"true\"\n  beta:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
     )
     .unwrap();
 
@@ -74,6 +74,38 @@ fn show_resolved_config_lists_multiple_checks() {
 
     assert!(stdout.contains("alpha"), "must show alpha check: {stdout}");
     assert!(stdout.contains("beta"), "must show beta check: {stdout}");
+}
+
+#[test]
+fn show_resolved_config_yaml_serializes_v1_rows() {
+    let dir = tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    std::fs::write(
+        &cfg,
+        "version: 1\nchecks:\n  acceptance:\n    run: cargo test --locked\n",
+    )
+    .unwrap();
+
+    let out = Command::cargo_bin("ironlint")
+        .unwrap()
+        .args([
+            "show-resolved-config",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--format",
+            "yaml",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: serde_yaml::Value = serde_yaml::from_slice(&out).unwrap();
+    let row = &rows.as_sequence().unwrap()[0];
+    assert_eq!(row["check"], "acceptance");
+    assert_eq!(row["run"], "cargo test --locked");
+    assert_eq!(row["files"], serde_yaml::Value::Sequence(Vec::new()));
+    assert!(row["origin"].as_str().unwrap().ends_with(".ironlint.yml"));
 }
 
 #[test]

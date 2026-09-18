@@ -10,7 +10,7 @@ fn validate_from_subdir_finds_parent_config() {
     let cfg = tmp.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  py:\n    files: [\"*.py\"]\n    run: \"true\"\n",
+        "version: 1\nchecks:\n  py:\n    files: [\"*.py\"]\n    run: \"true\"\n",
     )
     .unwrap();
     // Create a subdir and run from there with cwd set to it.

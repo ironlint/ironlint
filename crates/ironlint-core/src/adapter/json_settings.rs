@@ -6,14 +6,41 @@ pub enum PatchResult {
     AlreadyPresent,
 }
 
-/// True if any string anywhere in `v` contains `marker`.
+/// True if a hook command in `v` points into the managed adapter directory.
 fn contains_marker(v: &Value, marker: &str) -> bool {
     match v {
-        Value::String(s) => s.contains(marker),
         Value::Array(a) => a.iter().any(|e| contains_marker(e, marker)),
-        Value::Object(o) => o.values().any(|e| contains_marker(e, marker)),
+        Value::Object(o) => {
+            o.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.contains(marker))
+                || o.get("hooks")
+                    .is_some_and(|hooks| contains_marker(hooks, marker))
+        }
         _ => false,
     }
+}
+
+/// Strip managed commands, retaining other hooks even when they share an entry.
+fn strip_owned(arr: &mut Vec<Value>, marker: &str) -> bool {
+    let mut removed = false;
+    arr.retain_mut(|entry| {
+        if let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+            let before = hooks.len();
+            hooks.retain(|hook| !contains_marker(hook, marker));
+            if hooks.len() != before {
+                removed = true;
+                return !hooks.is_empty();
+            }
+        }
+        if contains_marker(entry, marker) {
+            removed = true;
+            false
+        } else {
+            true
+        }
+    });
+    removed
 }
 
 /// Mutable reference to `settings["hooks"][key]` as an array, creating the
@@ -55,7 +82,7 @@ pub fn sync_hook_array(
     if ironlint.len() == 1 && ironlint[0] == &desired {
         return PatchResult::AlreadyPresent;
     }
-    arr.retain(|e| !contains_marker(e, marker));
+    strip_owned(arr, marker);
     arr.push(desired);
     PatchResult::Added
 }
@@ -63,10 +90,7 @@ pub fn sync_hook_array(
 /// Remove every ironlint-owned entry from `settings.hooks[key]`. Returns whether
 /// anything was removed.
 pub fn remove_from_hook_array(settings: &mut Value, key: &str, marker: &str) -> bool {
-    let arr = hook_array(settings, key);
-    let before = arr.len();
-    arr.retain(|e| !contains_marker(e, marker));
-    arr.len() != before
+    strip_owned(hook_array(settings, key), marker)
 }
 
 #[cfg(test)]
@@ -122,6 +146,32 @@ mod tests {
     }
 
     #[test]
+    fn sync_keeps_foreign_hook_chained_in_same_entry() {
+        let mut settings = json!({"hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write",
+            "hooks": [
+                {"type": "command", "command": "\"/h/adapters/claude-code/hook.sh\" pre-tool-use"},
+                {"type": "command", "command": "my-custom-hook"}
+            ]
+        }]}});
+        let desired = claude_entry("\"/h/adapters/claude-code/new-hook.sh\" pre-tool-use");
+        sync_hook_array(
+            &mut settings,
+            "PreToolUse",
+            desired,
+            "/h/adapters/claude-code/",
+        );
+        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0]["hooks"],
+            json!([
+                {"type": "command", "command": "my-custom-hook"}
+            ])
+        );
+    }
+
+    #[test]
     fn remove_drops_only_ironlint_entries() {
         let mut s = json!({"hooks": {"PreToolUse": [
             claude_entry("\"/h/adapters/claude-code/hook.sh\" pre-tool-use"),
@@ -132,6 +182,28 @@ mod tests {
         let arr = s["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["hooks"][0]["command"], "keep me");
+    }
+
+    #[test]
+    fn remove_keeps_foreign_hook_chained_in_same_entry() {
+        let mut settings = json!({"hooks": {"PreToolUse": [{
+            "matcher": "Edit|Write",
+            "hooks": [
+                {"type": "command", "command": "\"/h/adapters/claude-code/hook.sh\" pre-tool-use"},
+                {"type": "command", "command": "my-custom-hook"}
+            ]
+        }]}});
+        assert!(remove_from_hook_array(
+            &mut settings,
+            "PreToolUse",
+            "/h/adapters/claude-code/"
+        ));
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][0]["hooks"],
+            json!([
+                {"type": "command", "command": "my-custom-hook"}
+            ])
+        );
     }
 
     #[test]

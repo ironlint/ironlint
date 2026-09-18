@@ -1,45 +1,34 @@
 # Diagnostics
 
-`doctor` parses v1 policies, but adapter rows inspect the currently installed
-write-hook artifacts. Passing rows do not prove completed-edit feedback or an
-external acceptance integration. See [adapter status](../adapters/README.md).
+When a policy will not run or an optional adapter appears inactive, start with:
 
-When checks misbehave — hooks not firing, an "untrusted config" error, or a check that won't run — start with `ironlint doctor`. It is a read-only command that checks the local install, config, shell, and adapter wiring, then reports how to fix each problem:
-
-```bash
+```sh
 ironlint doctor
 ```
 
-Each row is a check with a status and, when something's wrong, a remediation hint. The command exits `0` when every check is `pass` or `warn`, and `1` when any check `fail`s — so it drops cleanly into CI as a setup step.
+`doctor` is read-only. It checks the local binary, policy, shell, execution
+consent, and adapter files it can see, then provides a remediation hint for each
+problem. It exits 0 when every check passes or warns, and 1 when any check fails.
 
-For a machine-readable report, add `--format json`. The rest of this page is the contract for that output.
+Use `--format json` for a machine-readable report.
 
-## The checks
+## Checks
 
-`doctor` emits these checks, in this order:
+| Name | What it verifies |
+| --- | --- |
+| `binary` | The running `ironlint` resolves to a path and reports a version. |
+| `config` | `<dir>/.ironlint.yml` exists. |
+| `parses` | The v1 policy parses. |
+| `check_scripts` | A single-path command under `.ironlint/` exists and is executable. |
+| `shell` | A POSIX `sh` is on `PATH`. On Windows, use Git Bash or WSL. |
+| `trust` | The policy and managed scripts have local execution consent. |
+| `pi` | The optional Pi adapter is present and matches its installed files. |
+| `hooks` | Summary of optional adapter installations. |
 
-| `name` | What it verifies |
-|---|---|
-| `binary` | The running `ironlint` resolves to a path; reports the version. Always `pass`. |
-| `config` | `<dir>/.ironlint.yml` exists. `fail` if missing. |
-| `parses` | The v1 config parses, or the currently supported unversioned config and its inheritance parse. `fail` on malformed or unsupported input. |
-| `check_scripts` | For each check whose `run` is a single-token path beginning with `.ironlint/`, that the path exists and is executable. Inline commands (anything with a space) are skipped. `fail` lists the offending check(s). |
-| `shell` | A POSIX `sh` is available on `PATH`. `fail` if it is missing; IronLint needs it to run every `run:` command. On Windows, use Git Bash or WSL. |
-| `trust` | The config and every file under `.ironlint/scripts/` is blessed in the out-of-repo trust store. `warn` (not `fail`) when unblessed — `doctor` is read-only, and trust is enforced only at the `check` layer. Remediation: `ironlint trust`. |
-| `claude-code` | Harness adapter check: `~/.claude/settings.json` (or project `.claude/settings.local.json`) exists and the registered `PreToolUse` hook artifact is present and unmodified. `fail` if registered but artifact is missing; `warn` if not installed or artifact is modified/outdated. Omitted only when the harness is not detected, no artifact is installed, and no registration is found. |
-| `codex` | Harness adapter check: `~/.codex/hooks.json` (or project `.codex/hooks.json`) exists and the registered `PreToolUse` hook artifact is present and unmodified. Same `fail`/`warn` rules as above. This only checks that ironlint's file-system writes are present — it cannot see whether Codex has *reviewed and trusted* the hook, which Codex requires before it will actually run (see the [Codex adapter](../../adapters/codex/README.md)). |
-| `pi` | Harness adapter check: the `ironlint.ts` plugin artifact in `.pi/extensions/` (or `~/.pi/agent/extensions/`) is present and unmodified. Same `fail`/`warn` rules as above. |
-| `opencode` | Harness adapter check: the `ironlint.ts` plugin artifact in `.opencode/plugins/` is present and unmodified. Same `fail`/`warn` rules as above. |
-| `hook deps` | When a wired JSON-hook adapter needs them, `jq` and `python3` are available on `PATH`. `fail` names every missing dependency. Omitted when no such adapter is wired. |
-| `hooks` | Always-present summary row over the adapter checks. `warn` when zero coding-agent hooks are wired (the most common first-run failure mode — the tool's entire effect happens through hooks). Remediation: `ironlint init`. |
-
-Harness checks follow these rules:
-
-- **Registered but artifact missing** → `fail` → exit 1.
-- **Not detected, not installed, and not registered** → omitted entirely (no row emitted).
-- **Harness detected but no IronLint install or registration** → `warn`.
-- **Artifact modified or outdated** → `warn`.
-- **Installed and artifact matches** → `pass`.
+The adapter row can be omitted when neither Pi nor its IronLint adapter is
+found. A modified or outdated optional adapter produces a warning. An installed
+file is only an on-disk fact; no local diagnostic can prove every edit passes
+through an adapter.
 
 ## Report shape
 
@@ -52,43 +41,19 @@ Harness checks follow these rules:
       "status": "pass",
       "detail": "/work/repo/.ironlint.yml exists",
       "remediation": null
-    },
-    {
-      "name": "claude-code",
-      "status": "pass",
-      "detail": "installed and registered",
-      "remediation": null
     }
   ]
 }
 ```
 
 | Field | Type | Meaning |
-|---|---|---|
-| `ironlint_version` | string | Version of the running `ironlint` binary. |
-| `checks` | array of check objects | One per check, in the order above. Harness rows are included only when that harness is installed or registered. |
+| --- | --- | --- |
+| `ironlint_version` | string | Version of the running binary. |
+| `checks` | array | Checks in the order shown above. |
+| `name` | string | Stable check ID. |
+| `status` | `"pass"` \| `"warn"` \| `"fail"` | Outcome. Any failure makes the command exit 1. |
+| `detail` | string | Human-readable observation, which can include paths or versions. |
+| `remediation` | string \| null | Suggested next action, or `null` for a pass. |
 
-Each check object:
-
-| Field | Type | Meaning |
-|---|---|---|
-| `name` | string | Stable check id. Harness checks use `claude-code`, `codex`, `pi`, or `opencode`; the dependency check uses `hook deps`. |
-| `status` | `"pass"` \| `"warn"` \| `"fail"` | Outcome. Any `fail` → exit `1`; otherwise → exit `0`. |
-| `detail` | string | One short sentence on what was checked and found. May contain absolute paths or version numbers. |
-| `remediation` | string \| null | Actionable hint when `status` is not `pass`; `null` on pass. |
-
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Every check is `pass` or `warn`. |
-| `1` | At least one check is `fail`. A registered adapter with a missing artifact drives exit 1. |
-
-These are *distinct* from `ironlint check`'s `0`/`1`/`2`/`3` contract. `doctor` never produces a `Verdict` and never participates in adapter exit-code routing.
-
-## Stability
-
-- Current row statuses are `pass`, `warn`, and `fail`. Adapter rows may be removed
-  or replaced as part of the breaking v1 release; backward compatibility is not promised.
-- `detail` and `remediation` strings are human-readable and may change between releases — do not parse them.
-- The current exit-code rule is `0` for pass-or-warn and `1` for any fail.
+Do not parse `detail` or `remediation`; they are written for people and can
+change between releases.

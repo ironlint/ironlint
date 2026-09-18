@@ -1,7 +1,7 @@
-# V1 check recipes
+# Check recipes
 
-These commands run once against the actual tree. Review and adapt them to your
-project before granting execution consent.
+These commands run once against the project tree. Review and adapt them before
+granting execution consent.
 
 ## Rust workspace
 
@@ -30,8 +30,8 @@ checks:
 ```
 
 The script selects inputs and returns nonzero on violation. Use its normal error
-handling so a failed step cannot be hidden by later success. Managed script changes
-require renewed consent; external acceptance separately fixes approved provenance.
+handling so a failed step cannot be hidden by later success. Changes to a managed
+script require renewed execution consent.
 
 ## Acceptance-only check
 

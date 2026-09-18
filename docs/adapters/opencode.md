@@ -1,14 +1,11 @@
 # OpenCode integration
 
-The [adapter README](../../adapters/opencode/README.md) documents the current
-unversioned write-hook plugin and installation paths. It is not a v1 completed-edit
-feedback integration. Live capture remains pending.
+New OpenCode adapter installation is not supported in IronLint v1. If an older
+owned installation remains, remove it with:
 
-## What it does NOT do
+```sh
+ironlint init --uninstall --harness opencode
+```
 
-Current proposal reconstruction covers a subset of tools and payloads. Do not
-infer project-wide write coverage or external acceptance from the plugin. See
-the adapter README's known gaps and [adapter status](README.md).
-
-The [active plan](../../plans/2026-09-05-ironlint-v1-implementation.md) tracks verified
-completed-edit feedback and safe cleanup of obsolete registrations.
+IronLint preserves edited or unrecognized files for manual review. Use the
+[v1 command-line workflow](../getting-started.md) for current policies.

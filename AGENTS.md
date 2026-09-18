@@ -18,21 +18,17 @@ v1 plan and no historical planning archive. Do not revive removed roadmap items.
 IronLint is a Rust command-check evaluator for AI coding workflows. `version: 1`
 policies use `run`, optional `files`, and `on: [accept]` or `[change, accept]`.
 The versioned core/CLI, schema-7 output, bounded execution, local consent, and
-read-only inspection are implemented. Core release verification uses local Docker
-feature E2E tests. Harness compatibility and external enforcement qualification
-belong to adapter/integration owners, not the core release gate.
+read-only inspection are implemented. Unversioned configuration and the former
+execution paths have been removed. `ironlint schema` and `init` both expose the
+v1 format. Core release verification uses local Docker feature E2E tests.
+Harness compatibility and external enforcement qualification belong to
+adapter/integration owners, not the core release gate.
 
-Unversioned configs, schema-6 verdicts, preview execution, gate-bash, and the old
-installer/adapters still exist in the checkout. **V1 is a breaking release:**
-backward compatibility, automatic config conversion, migration reports, and
-coordinated rollback are out of scope. Their presence does not require preserving
-old behavior in v1. Remove them through the active plan, after tracing retained
-callers and safely removing owned hook registrations. Preserve unrelated user
-settings and hooks. Do not claim planned integration behavior already exists.
-
-`ironlint schema` prints the installed authoring guide; it currently covers both
-formats. `init` still scaffolds the unversioned format. See the architecture's
-installation section before editing either.
+Pi is the only adapter available for new installation. Claude Code, Codex, and
+OpenCode registrations remain recognizable only so `init --uninstall` can
+safely remove owned artifacts while preserving user edits. The optional Git
+pre-commit hook is installed only with `--git-hook` and runs complete v1
+acceptance.
 
 ## V1 contracts
 
@@ -52,8 +48,6 @@ installation section before editing either.
   requires trust. Consent is not isolation or authority over repository acceptance.
 - An integration claiming enforced acceptance must bind approved policy/evaluator and a complete
   result to the exact candidate, with publication authority inaccessible to checks.
-- Config-less `gate-bash` currently returns 0 allow / 2 block; existing adapters
-  fail closed on gate errors. Remove owned registrations before deleting this path.
 - Binary name: `ironlint`. Commit `Cargo.lock`; build and test with `--locked`.
 
 ## Validation and working rules
@@ -69,11 +63,10 @@ installation section before editing either.
   them against the developer's live trust store or hook installation.
 - Remove transient build/scratch artifacts produced by the task; keep the normal
   iterative `target/`. Mutation testing is optional investigation, not a CI gate.
-- Keep provenance-stamped adapter fixtures and capture-pending declarations intact
-  while their suites are active. Run `adapter-drift-audit` when a harness contract
-  changes. Existing Codex captures cover pre-write add/update; the other three
-  harnesses remain capture-pending. Live harness verification is adapter-owned;
-  the core fixture harness tests only the stable CLI contract.
+- Keep provenance-stamped Pi adapter fixtures intact while its suite is active.
+  Run `adapter-drift-audit` when the Pi harness contract changes. Live harness
+  verification is adapter-owned; the fixture suite tests only the stable CLI
+  contract.
 
 ```sh
 cargo test --locked
@@ -84,9 +77,8 @@ bash scripts/ci-adapters.sh
 bash tests/e2e/features/run.sh
 ```
 
-The adapter script needs isolated `XDG_CONFIG_HOME` when run locally; retain these
-legacy suites until safe cleanup removes their callers. Core release validation
-requires the local feature suite, not a live harness or hosted repository.
+The adapter script needs isolated `XDG_CONFIG_HOME` when run locally. Core release
+validation requires the local feature suite, not a live harness or hosted repository.
 Fixture tests cannot prove repository enforcement. Publishing requires task authorization.
 
 <!-- graft:start -->

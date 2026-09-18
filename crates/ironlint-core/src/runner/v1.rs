@@ -1,20 +1,26 @@
-use crate::config::v1::{parse_v1_file, V1Event};
+use crate::config::v1::{parse_v1_bytes, V1Event};
 use crate::engine::{run_v1, V1ExecutionEnv, V1ExecutionError, V1ExecutionOutcome};
+use crate::trust::ApprovedPolicy;
 use crate::verdict::{V1CheckOutcome, V1CheckResult, V1NotRun, V1Verdict};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Evaluate one v1 policy against the supplied tree. Selection is performed
-/// once, in the config's lexicographic check-id order; each selected command
-/// runs at most once.
+/// Evaluate one approved v1 policy against the supplied tree.
+///
+/// The config is parsed from the approved snapshot's bytes, never re-read from
+/// the live path, and the approved policy plus every managed script is
+/// re-verified before each check runs. Drift stops the run fail-closed: the
+/// remaining checks are reported `not_run` with reason `policy_changed` and no
+/// unapproved bytes execute. Selection is performed once, in the config's
+/// lexicographic check-id order; each selected command runs at most once.
 pub fn evaluate_v1(
-    policy: &Path,
+    approved: &ApprovedPolicy,
     root: &Path,
     event: &str,
     changed_paths: Option<&[PathBuf]>,
 ) -> Result<V1Verdict> {
-    let config = parse_v1_file(policy)?;
+    let config = parse_v1_bytes(approved.policy_bytes())?;
     let event = parse_event(event)?;
     let event_name = event_name(event);
     let selected = config.selected_ids(event, changed_paths);
@@ -40,6 +46,11 @@ pub fn evaluate_v1(
         }
 
         let check = &config.checks[*id];
+        if let Err(drift) = approved.verify_unchanged() {
+            mark_not_run(&mut not_run, &selected[index..], "policy_changed");
+            error = Some(format!("{drift:#}"));
+            break;
+        }
         let execution = run_v1(
             &check.run,
             &V1ExecutionEnv {
@@ -59,6 +70,14 @@ pub fn evaluate_v1(
             mark_not_run(&mut not_run, &selected[index + 1..], "execution_error");
             error = results.last().and_then(|result| result.reason.clone());
             break;
+        }
+    }
+
+    if error.is_none() && !selected.is_empty() {
+        // Post-run: a check that edited the approved policy or scripts (or a
+        // concurrent writer doing so) must never yield a clean `pass`.
+        if let Err(drift) = approved.verify_unchanged() {
+            error = Some(format!("{drift:#}"));
         }
     }
 
@@ -127,6 +146,21 @@ fn mark_not_run(not_run: &mut Vec<V1NotRun>, ids: &[&str], reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trust::{bless_in, check_trust_in, TrustOutcome};
+
+    /// Build the approved snapshot the way the CLI does: bless into an
+    /// isolated store, then verify and take the verified bytes.
+    fn approve(dir: &Path, policy: &Path) -> ApprovedPolicy {
+        let store = dir.join("trust-store.json");
+        bless_in(policy, &store, "test").unwrap();
+        match check_trust_in(policy, &store) {
+            TrustOutcome::Trusted(approved) => approved,
+            TrustOutcome::Untrusted(_) | TrustOutcome::Unverifiable(_) => {
+                panic!("test policy must be trusted")
+            }
+        }
+    }
+
     #[test]
     fn no_selected_change_checks_is_not_run_not_pass() {
         let dir = tempfile::tempdir().unwrap();
@@ -135,8 +169,10 @@ mod tests {
             "version: 1\nchecks:\n  rust: {files: '**/*.rs', on: [change, accept], run: 'exit 0'}\n",
         )
         .unwrap();
+        let policy = dir.path().join("policy.yml");
+        let approved = approve(dir.path(), &policy);
         let verdict = evaluate_v1(
-            &dir.path().join("policy.yml"),
+            &approved,
             dir.path(),
             "change",
             Some(&[PathBuf::from("README.md")]),
@@ -154,11 +190,51 @@ mod tests {
             "version: 1\nchecks:\n  a: {run: 'definitely-not-a-real-command-ironlint-v1'}\n  b: {run: 'touch b-ran'}\n",
         )
         .unwrap();
-        let verdict =
-            evaluate_v1(&dir.path().join("policy.yml"), dir.path(), "accept", None).unwrap();
+        let policy = dir.path().join("policy.yml");
+        let approved = approve(dir.path(), &policy);
+        let verdict = evaluate_v1(&approved, dir.path(), "accept", None).unwrap();
         assert_eq!(verdict.status, crate::verdict::V1Status::Error);
         assert_eq!(verdict.not_run[0].id, "b");
         assert!(!dir.path().join("b-ran").exists());
+    }
+
+    /// SECURITY REGRESSION: a check that rewrites a managed script must stop
+    /// the run before the next check executes the unapproved bytes, even
+    /// though the approved hash covered the original script.
+    #[test]
+    fn script_drift_between_checks_stops_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ironlint/scripts")).unwrap();
+        std::fs::write(
+            dir.path().join(".ironlint/scripts/gate.sh"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .unwrap();
+        let policy = dir.path().join("policy.yml");
+        std::fs::write(
+            &policy,
+            r#"version: 1
+checks:
+  a-rewrite:
+    run: |
+      cat > "$IRONLINT_ROOT/.ironlint/scripts/gate.sh" <<'EOF'
+      #!/bin/sh
+      touch "$IRONLINT_ROOT/gate-mutated-ran"
+      exit 0
+      EOF
+  b-gate:
+    run: sh "$IRONLINT_ROOT/.ironlint/scripts/gate.sh"
+"#,
+        )
+        .unwrap();
+        let approved = approve(dir.path(), &policy);
+        let verdict = evaluate_v1(&approved, dir.path(), "accept", None).unwrap();
+        assert_eq!(verdict.status, crate::verdict::V1Status::Error);
+        assert_eq!(verdict.not_run.len(), 1);
+        assert_eq!(verdict.not_run[0].id, "b-gate");
+        assert_eq!(verdict.not_run[0].reason, "policy_changed");
+        assert!(verdict.error.is_some());
+        assert!(!dir.path().join("gate-mutated-ran").exists());
     }
 
     #[test]
@@ -169,8 +245,9 @@ mod tests {
             "version: 1\nchecks:\n  check: {run: 'exit 0'}\n",
         )
         .unwrap();
-        let error =
-            evaluate_v1(&dir.path().join("policy.yml"), dir.path(), "other", None).unwrap_err();
+        let policy = dir.path().join("policy.yml");
+        let approved = approve(dir.path(), &policy);
+        let error = evaluate_v1(&approved, dir.path(), "other", None).unwrap_err();
         assert!(error.to_string().contains("expected `change` or `accept`"));
     }
 

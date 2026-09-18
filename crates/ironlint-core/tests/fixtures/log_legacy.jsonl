@@ -1,5 +1,0 @@
-{"timestamp":"2026-05-12T18:00:00Z","kind":"check","file":"src/foo.rs","rule_id":null,"status":"pass","elapsed_ms":12}
-{"timestamp":"2026-05-12T18:00:01Z","kind":"check","file":"src/bar.rs","rule_id":null,"status":"warn","elapsed_ms":4}
-{"timestamp":"2026-05-12T18:00:02Z","kind":"semantic_skipped","file":"src/lib.rs","rule_id":"no-unwrap","status":"pass","elapsed_ms":0,"reason":"whitespace_only"}
-{"timestamp":"2026-05-12T18:00:03Z","kind":"skipped","file":"Cargo.lock","rule_id":null,"status":"pass","elapsed_ms":0}
-{"timestamp":"2026-05-12T18:00:04Z","kind":"check_session","file":"","rule_id":null,"status":"block","elapsed_ms":120}

@@ -1,12 +1,13 @@
 use crate::adapter::{AdapterEnv, Harness, HarnessKind};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-// --- embedded artifacts (single source of truth = adapters/) -----------------
-const CLAUDE_HOOK: &str = include_str!("../../../../adapters/claude-code/hooks/hook.sh");
-const CODEX_HOOK: &str = include_str!("../../../../adapters/codex/hooks/hook.sh");
+// Cleanup-only harnesses retain inert bytes so the generic ownership machinery
+// can still identify their former artifact names without shipping executable
+// legacy behavior.
+const CLEANUP_HOOK: &str = "#!/bin/sh\n# cleanup-only IronLint artifact\nexit 1\n";
+const CLEANUP_PLUGIN: &str = "// cleanup-only IronLint artifact\nexport {};\n";
 const PI_PLUGIN: &str = include_str!("../../../../adapters/pi/src/index.ts");
-const OPENCODE_PLUGIN: &str = include_str!("../../../../adapters/opencode/src/index.ts");
 const IRONLINT_CONFIG_SKILL: &str =
     include_str!("../../../../adapters/shared/ironlint-config/SKILL.md");
 
@@ -43,12 +44,7 @@ pub struct SkillSpec {
 
 // --- per-harness entry builders (also unit-tested directly) ------------------
 pub(crate) fn claude_build_entry(command: &str) -> Value {
-    // MultiEdit and NotebookEdit are gated by hook.sh alongside Edit/Write
-    // (Task 5.24); Bash is gated by the bash-gate branch (Task 5 of the
-    // bash-gate plan). The matcher must name every tool the hook handles or
-    // those calls never invoke the hook and bypass every check. Codex's
-    // matcher is unrelated (apply_patch|Edit|Write) — do not fold these into it.
-    json!({"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    json!({"matcher": "Edit|Write|MultiEdit|NotebookEdit",
            "hooks": [{"type": "command", "command": command}]})
 }
 
@@ -60,82 +56,19 @@ pub(crate) fn codex_build_entry(command: &str) -> Value {
     // Codex kills the hook process first and the edit lands ungated with no
     // signal to anyone. See docs/adapters/README.md "Timeout budget".
     //
-    // `Bash` (capital B — confirmed empirically 2026-07-06) is codex's shell
-    // tool, gated by the bash-gate branch (Task 6 of the bash-gate plan). The
-    // matcher must name it or the bash-gate never fires.
-    json!({"matcher": "apply_patch|Edit|Write|Bash",
+    json!({"matcher": "apply_patch|Edit|Write",
            "hooks": [{"type": "command", "command": command,
                       "timeout": 120, "statusMessage": "ironlint check"}]})
 }
 
 // --- registry ----------------------------------------------------------------
-/// The adapter installation surface gate-bash must protect (W3-R2).
-///
-/// The settings files and plugin dirs the harness specs install into,
-/// expressed as repo-relative / home-relative path forms (prefixes `/p` /
-/// `/h` stripped from a synthetic env). This is the single source of truth
-/// for the gate-bash self-defense blocklist: `ironlint-bash-gate`'s
-/// `ADAPTER_SURFACE_FILES` / `ADAPTER_SURFACE_DIRS` must equal these —
-/// asserted by a parity test in `ironlint-cli` — so a fifth adapter or a
-/// moved install path fails the gate before the classifier silently
-/// under-covers it.
-pub fn adapter_install_surface() -> (Vec<String>, Vec<String>) {
-    let e = AdapterEnv {
-        home: PathBuf::from("/h"),
-        config_home: PathBuf::from("/c"),
-        project_root: PathBuf::from("/p"),
-    };
-    let strip = |p: PathBuf| -> String {
-        let s = p.to_string_lossy().into_owned();
-        if let Some(rest) = s.strip_prefix("/p/") {
-            return rest.to_string();
-        }
-        if let Some(rest) = s.strip_prefix("/h/") {
-            return rest.to_string();
-        }
-        s
-    };
-    let mut files = vec![
-        strip((CLAUDE.settings_local)(&e).expect("claude local settings")),
-        strip((CLAUDE.settings_global)(&e)),
-        strip((CODEX.settings_local)(&e).expect("codex local hooks")),
-        strip((CODEX.settings_global)(&e)),
-    ];
-    let mut dirs: Vec<String> = [
-        (PI.dir_local)(&e),
-        (PI.dir_global)(&e),
-        (OPENCODE.dir_local)(&e),
-        (OPENCODE.dir_global)(&e),
-    ]
-    .into_iter()
-    .flatten()
-    .map(strip)
-    .collect();
-    // The PARENT dirs of the settings files: `rm -rf ~/.claude` deletes the
-    // rail without ever naming the file. gate-bash must block those too, so
-    // the parity set includes each file target's parent directory.
-    for f in &files {
-        if let Some(parent) = Path::new(f).parent() {
-            let parent = parent.to_string_lossy().to_string();
-            if !parent.is_empty() && parent != "." && !dirs.contains(&parent) {
-                dirs.push(parent);
-            }
-        }
-    }
-    files.sort();
-    files.dedup();
-    dirs.sort();
-    dirs.dedup();
-    (files, dirs)
-}
-
 const CLAUDE: JsonHookSpec = JsonHookSpec {
     settings_local: |e| Some(e.project_root.join(".claude").join("settings.local.json")),
     settings_global: |e| e.home.join(".claude").join("settings.json"),
     array_key: "PreToolUse",
     entry_arg: "pre-tool-use",
     primary: "hook.sh",
-    files: &[("hook.sh", CLAUDE_HOOK)],
+    files: &[("hook.sh", CLEANUP_HOOK)],
     build_entry: claude_build_entry,
 };
 
@@ -145,7 +78,7 @@ const CODEX: JsonHookSpec = JsonHookSpec {
     array_key: "PreToolUse",
     entry_arg: "pre-tool-use",
     primary: "hook.sh",
-    files: &[("hook.sh", CODEX_HOOK)],
+    files: &[("hook.sh", CLEANUP_HOOK)],
     build_entry: codex_build_entry,
 };
 
@@ -161,7 +94,7 @@ const OPENCODE: PluginSpec = PluginSpec {
     dir_local: |e| Some(e.project_root.join(".opencode").join("plugins")),
     dir_global: |_| None, // opencode plugins are project-scoped (per adapter README)
     filename: "ironlint.ts",
-    source: OPENCODE_PLUGIN,
+    source: CLEANUP_PLUGIN,
     detect: |e| {
         e.config_home.join("opencode").is_dir() || e.project_root.join(".opencode").is_dir()
     },
@@ -196,24 +129,28 @@ pub fn all_harnesses() -> Vec<Harness> {
             kind: HarnessKind::JsonHook(CLAUDE),
             restart_hint: "Reload Claude Code (or restart) — it picks up settings.json hooks.",
             skill: CLAUDE_SKILL,
+            installable: false,
         },
         Harness {
             name: "codex",
             kind: HarnessKind::JsonHook(CODEX),
             restart_hint: "Restart Codex, then review+trust the ironlint hook when Codex prompts (non-managed hooks require trust).",
             skill: CODEX_SKILL,
+            installable: false,
         },
         Harness {
             name: "pi",
             kind: HarnessKind::Plugin(PI),
             restart_hint: "Restart pi so it loads the new extension.",
             skill: PI_SKILL,
+            installable: true,
         },
         Harness {
             name: "opencode",
             kind: HarnessKind::Plugin(OPENCODE),
             restart_hint: "Restart opencode so it loads the new plugin.",
             skill: OPENCODE_SKILL,
+            installable: false,
         },
     ]
 }
@@ -224,13 +161,24 @@ pub fn all_harnesses() -> Vec<Harness> {
 /// both register a `PreToolUse` hook (see `CLAUDE`/`CODEX` above), so a
 /// dispatch on `array_key` alone can no longer distinguish them.
 pub(crate) fn is_detected(harness: &Harness, env: &AdapterEnv) -> bool {
+    let owned_artifacts = crate::adapter::adapters_dir(env)
+        .join(harness.name)
+        .exists();
     match &harness.kind {
         HarnessKind::JsonHook(_) => match harness.name {
-            "claude-code" => env.home.join(".claude").is_dir(),
-            "codex" => env.home.join(".codex").is_dir(),
+            "claude-code" => {
+                owned_artifacts
+                    || env.home.join(".claude").is_dir()
+                    || env.project_root.join(".claude").is_dir()
+            }
+            "codex" => {
+                owned_artifacts
+                    || env.home.join(".codex").is_dir()
+                    || env.project_root.join(".codex").is_dir()
+            }
             _ => false,
         },
-        HarnessKind::Plugin(p) => (p.detect)(env),
+        HarnessKind::Plugin(p) => owned_artifacts || (p.detect)(env),
     }
 }
 
@@ -272,7 +220,7 @@ mod tests {
     #[test]
     fn claude_entry_points_at_command_and_matcher() {
         let e = claude_build_entry("\"/x/hook.sh\" pre-tool-use");
-        assert_eq!(e["matcher"], "Edit|Write|MultiEdit|NotebookEdit|Bash");
+        assert_eq!(e["matcher"], "Edit|Write|MultiEdit|NotebookEdit");
         assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
     }
 
@@ -288,7 +236,7 @@ mod tests {
     #[test]
     fn codex_entry_matches_apply_patch() {
         let e = codex_build_entry("\"/x/hook.sh\" pre-tool-use");
-        assert_eq!(e["matcher"], "apply_patch|Edit|Write|Bash");
+        assert_eq!(e["matcher"], "apply_patch|Edit|Write");
         assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
 
         // Assert the *relationship*, not just the current literal, so a
@@ -311,10 +259,15 @@ mod tests {
         let env = env_with(home, home);
         let found: std::collections::BTreeMap<_, _> =
             crate::adapter::detect(&env).into_iter().collect();
-        assert!(found["claude-code"]);
-        assert!(found["pi"]);
-        assert!(!found["codex"]);
-        assert!(!found["opencode"]);
+        assert_eq!(
+            found,
+            std::collections::BTreeMap::from([
+                ("claude-code", true),
+                ("codex", false),
+                ("opencode", false),
+                ("pi", true),
+            ])
+        );
     }
 
     #[test]

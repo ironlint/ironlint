@@ -1,9 +1,0 @@
-schema_version: 2
-
-rules:
-  base-rule:
-    description: "Inherited from base."
-    engine: script
-    scope: ["*"]
-    severity: warning
-    script: "true"

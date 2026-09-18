@@ -7,7 +7,15 @@ fn write(p: &Path, body: &str) {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).unwrap();
     }
-    fs::write(p, body).unwrap();
+    if matches!(
+        p.extension().and_then(|ext| ext.to_str()),
+        Some("yml" | "yaml")
+    ) && !body.starts_with("version:")
+    {
+        fs::write(p, format!("version: 1\n{body}")).unwrap();
+    } else {
+        fs::write(p, body).unwrap();
+    }
 }
 
 /// Build a real git repo at `root` so `WorktreeScope::discover` succeeds.

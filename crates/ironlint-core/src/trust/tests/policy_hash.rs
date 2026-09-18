@@ -7,7 +7,15 @@ fn write(p: &Path, body: &str) {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).unwrap();
     }
-    fs::write(p, body).unwrap();
+    if matches!(
+        p.extension().and_then(|ext| ext.to_str()),
+        Some("yml" | "yaml")
+    ) && !body.starts_with("version:")
+    {
+        fs::write(p, format!("version: 1\n{body}")).unwrap();
+    } else {
+        fs::write(p, body).unwrap();
+    }
 }
 
 /// Build a real git repo at `root` so `WorktreeScope::discover` succeeds.
@@ -80,7 +88,7 @@ fn hash_folds_scripts_in_sorted_order() {
     // which doubles as a regression lock on the stored-hash encoding.
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join(".ironlint.yml");
-    let cfg_body = "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
+    let cfg_body = "version: 1\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
     write(&cfg, cfg_body);
     write(&dir.path().join(".ironlint/scripts/a.sh"), "a\n");
     write(&dir.path().join(".ironlint/scripts/b.sh"), "b\n");
@@ -130,21 +138,6 @@ fn editing_a_referenced_outside_script_does_not_change_hash() {
     assert_eq!(
         before, after,
         "editing an in-repo script OUTSIDE .ironlint/scripts/ no longer revokes trust"
-    );
-}
-
-#[test]
-fn compute_hash_errors_on_missing_extends_target() {
-    // compute_hash resolves the extends closure; a config pointing at a
-    // non-existent base can't be hashed — it fails closed rather than
-    // silently hashing only the local file.
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join(".ironlint.yml");
-    write(&cfg, "extends: [\"./nope.yml\"]\nchecks: {}\n");
-    let err = compute_hash(&cfg).unwrap_err().to_string();
-    assert!(
-        err.contains("extends closure"),
-        "error should name the closure resolution: {err}"
     );
 }
 
@@ -343,25 +336,126 @@ fn worktree_hash_changes_when_script_changes() {
     assert_ne!(h1, h2, "editing a covered script changes the worktree hash");
 }
 
+/// The verified snapshot must expose the exact policy bytes the hash covered.
 #[test]
-fn worktree_hash_is_ineligible_when_extends_escapes_root() {
-    // extends: target lives OUTSIDE the worktree root -> ineligible (None).
-    let outside = tempfile::tempdir().unwrap();
-    let base = outside.path().join("base.ironlint.yml");
+fn approved_policy_exposes_approved_bytes_and_verifies_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    let body = "version: 1\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n";
+    write(&cfg, body);
     write(
-        &base,
-        "checks:\n  b:\n    files: \"*\"\n    run: \"true\"\n",
+        &dir.path().join(".ironlint/scripts/g.sh"),
+        "#!/bin/sh\nexit 0\n",
     );
-    let root = tempfile::tempdir().unwrap();
-    git_repo(root.path());
-    let cfg = root.path().join(".ironlint.yml");
+    let approved = read_and_hash(&cfg).unwrap();
+    assert_eq!(approved.policy_bytes(), body.as_bytes());
+    approved.verify_unchanged().unwrap();
+}
+
+/// Drift in any covered blob fails closed and names the drifted entry.
+#[test]
+fn verify_unchanged_detects_modified_added_and_removed_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
     write(
         &cfg,
-        &format!("extends: [\"{}\"]\nchecks: {{}}\n", base.display()),
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
     );
-    let scope = WorktreeScope::discover(&cfg).unwrap();
+    let scripts = dir.path().join(".ironlint/scripts");
+    write(&scripts.join("g.sh"), "#!/bin/sh\nexit 0\n");
+    let approved = read_and_hash(&cfg).unwrap();
+
+    write(&scripts.join("g.sh"), "#!/bin/sh\nexit 2\n");
+    let modified = approved.verify_unchanged().unwrap_err().to_string();
+    assert!(modified.contains("g.sh"), "{modified}");
+    assert!(modified.contains("modified or added"), "{modified}");
+
+    fs::remove_file(scripts.join("g.sh")).unwrap();
+    let removed = approved.verify_unchanged().unwrap_err().to_string();
+    assert!(removed.contains("g.sh"), "{removed}");
+    assert!(removed.contains("removed"), "{removed}");
+
+    write(&scripts.join("new.sh"), "#!/bin/sh\nexit 0\n");
+    let added = approved.verify_unchanged().unwrap_err().to_string();
+    assert!(added.contains("new.sh"), "{added}");
+    assert!(added.contains("modified or added"), "{added}");
+}
+
+#[test]
+fn verify_unchanged_detects_policy_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+    );
+    let approved = read_and_hash(&cfg).unwrap();
+    write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"false\"\n",
+    );
+    let error = approved.verify_unchanged().unwrap_err().to_string();
+    assert!(error.contains("policy"), "{error}");
+    assert!(error.contains(".ironlint.yml"), "{error}");
+}
+
+/// Unreadable or unparseable live bytes can never be confirmed approved, so
+/// verification must fail closed rather than assume no drift.
+#[test]
+fn verify_unchanged_fails_closed_when_live_policy_no_longer_parses() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+    );
+    let approved = read_and_hash(&cfg).unwrap();
+    write(&cfg, "checks: {broken");
+    let error = approved.verify_unchanged().unwrap_err().to_string();
+    assert!(error.contains("could not verify"), "{error}");
+}
+
+/// The approved snapshot must not retain managed-script bytes: it is held for
+/// the whole run and a fresh live copy is built before every check, so keeping
+/// blob content resident would double the footprint of a large scripts tree
+/// (and `verify_unchanged` only ever needs the digest comparison).
+#[test]
+fn approved_snapshot_retains_digests_not_script_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+    let big = vec![b'x'; 1 << 20];
+    fs::create_dir_all(dir.path().join(".ironlint/scripts")).unwrap();
+    fs::write(dir.path().join(".ironlint/scripts/big.sh"), &big).unwrap();
+
+    let approved = read_and_hash(&cfg).unwrap();
     assert!(
-        compute_worktree_hash(&cfg, &scope).unwrap().is_none(),
-        "an extends target outside the root is ineligible"
+        approved.retained_blob_bytes() < big.len(),
+        "snapshot retained {} blob bytes for a {} byte script",
+        approved.retained_blob_bytes(),
+        big.len()
+    );
+}
+
+/// The byte-bound hash used by `init` must fold identically to the path-based
+/// hash, or blessing classified bytes would record a digest `check` can never
+/// reproduce.
+#[test]
+fn byte_bound_hash_matches_path_hash_for_the_same_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*\"\n    run: \".ironlint/scripts/g.sh\"\n",
+    );
+    write(
+        &dir.path().join(".ironlint/scripts/g.sh"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    let bytes = fs::read(&cfg).unwrap();
+    assert_eq!(
+        compute_hash(&cfg).unwrap(),
+        hash_policy_bytes(&cfg, &bytes).unwrap(),
+        "path-based and byte-bound hashing must agree for identical content"
     );
 }

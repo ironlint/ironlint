@@ -109,10 +109,7 @@ fn lock_path(store_path: &Path) -> PathBuf {
     store_path.with_extension("lock")
 }
 
-/// RAII guard for the exclusive store lock: dropping it releases the flock
-/// (closing the underlying fd releases a POSIX `flock`, so an explicit
-/// `unlock` call isn't needed here — unlike `telemetry::append`, which
-/// unlocks eagerly to shrink its critical section).
+/// RAII guard for the exclusive store lock: dropping it releases the flock.
 #[cfg(unix)]
 pub(super) struct StoreLock {
     _file: std::fs::File,

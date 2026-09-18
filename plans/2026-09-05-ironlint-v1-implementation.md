@@ -4,13 +4,14 @@
 
 - **Target:** a breaking v1 core release with deterministic command checks,
   editable feedback, and local feature E2E coverage.
-- **Status:** core/CLI implemented; local feature suite added; removal work remains.
-- **Verified code baseline:** `459bbadf80e2a81f4fba1fd39a57aa4c65fdda45` on `main`.
-- **Baseline evidence:** 1,048 locked Rust tests; clippy and fmt passed; 94.25%
-  aggregate region coverage with every gated file at least 80%; all four adapter
-  suites passed. One independent review of that fix batch was resolved. These are
-  code checks, not hosted enforcement or real harness compatibility evidence.
-- **Current task:** P3, safe owned-install cleanup and legacy removal.
+- **Status:** P3 legacy removal is complete. P4 has provisional green local
+  evidence, but two trust findings require explicit authorization and the final
+  committed SHA still needs the complete release rerun before a v1.0.0 tag.
+- **Current working-tree base:** `35c7cfc85e27484a9caa3ba171234d56845f3a9e`.
+  The release changes remain uncommitted; evidence below is provisional until
+  repeated against the final commit.
+- **Current task:** obtain an explicit decision on the two trust blockers in the
+  checkpoint, then commit the intended release tree and rerun every P4 command.
 - **Scope decision (2026-09-14):** the user replaced mandatory hosted-repository
   and live-harness proof with Docker feature E2E tests. Adapter domains or separate
   projects own their respective harness evolution and qualification.
@@ -50,12 +51,56 @@ expansion. Remove obsolete docs instead of maintaining historical roadmaps.
 | P0 | Select local feature boundary | None | Done | Scope decision above |
 | P1 | Docker feature E2E suite | P0 | Done | Nine feature groups passed; command below |
 | P2 | Separate adapter/integration qualification from core | P0 | Done | Spec §§4, 9, 12; `docs/adapters/README.md` |
-| P3 | Owned-install cleanup and removal of old execution paths | P1 validated | Pending | Not recorded |
-| P4 | Integrated release verification and documentation | P3 | Pending | Not recorded |
+| P3 | Owned-install cleanup and removal of old execution paths | P1 validated | Done | V1-only CLI/core; owned local/global cleanup preserves foreign or edited files and fails incomplete cleanup; focused and workspace tests passed |
+| P4 | Integrated release verification and documentation | P3 | Pending | Provisional checks pass on the uncommitted tree; trust decisions and final committed-SHA rerun remain |
 
 P3 inventory can happen immediately; installed paths are removed only with a
 tested cleanup procedure and truthful capability documentation. No live harness
 or remote repository access blocks this work.
+
+### 2026-09-15 checkpoint — resume next session
+
+**Completed since the prior checkpoint:** the workspace is version `1.0.0`; the
+container-acceptance helper and its test are present; formatting is clean; and P3
+is complete. The old Bash gate crate/command, unversioned config dispatch,
+schema-6 verdicts, `extends`/`steps`, proposal-content execution, diff/watch/
+telemetry/sweep paths, and their obsolete callers were removed. On a successful
+first run, `init` scaffolds a v1 policy, records consent, and installs only the
+supported Pi adapter. Cleanup-only
+legacy adapters remain discoverable for uninstall: owned local and global
+registrations are removed, foreign and edited content is preserved, and any
+incomplete cleanup exits nonzero. Public docs, CI, manual E2E instructions, and
+fixture records now describe the retained v1/Pi surface. These changes remain
+uncommitted.
+
+**Provisional validation on the current working tree:** locked workspace tests,
+clippy with warnings denied, fmt, the per-file coverage gate, the Pi adapter lane,
+container-acceptance helper tests, and all nine Docker feature groups have passed
+during the 2026-09-15 integration sweep. The latest coverage run reports 91.91%
+workspace region coverage with every source file at least 80%;
+`show_resolved_config.rs` is 89.39%. Record exact final counts and tool versions
+after the release commit rather than treating these working-tree runs as release
+evidence.
+
+**Open release blockers, in order:**
+
+1. **Authorization required — exact-byte trust binding.** `check` verifies the
+   policy/script hash, then reloads the config and executes managed scripts from
+   the live filesystem. A complete fix must bind execution to the exact approved
+   config and managed-script snapshot; hash-before/after checks are insufficient.
+   This is a pre-existing security gap and no partial workaround was applied.
+2. **Authorization required — recoverable init consent.** A new baseline config
+   is written before `trust::bless`. If consent storage fails, the config remains;
+   a retry sees an existing config and can exit without blessing it. The preferred
+   fix is to roll back only the just-created exact baseline on bless failure, with
+   a failure-then-retry regression. No trust code was changed without explicit
+   authorization.
+3. Commit the intended release tree, then rerun every P4 command and record the
+   exact commit, toolchain/container details, and results here. The current tree
+   has 177 changed or untracked paths, so present results are not tag evidence.
+
+Live harness compatibility and hosted enforcement qualification remain
+adapter/integration-owned and are not core v1 release gates.
 
 ### P0: local reference setup
 
@@ -119,9 +164,11 @@ schema/installed authoring guide, help, doctor, README, and architecture alongsi
 the code. Remove obsolete-only tests after identifying retained-contract coverage;
 do not weaken tests of behavior v1 still requires.
 
-**Done:** no installed IronLint entry calls a removed command; unrelated settings
-survive; v1 examples run; old config is rejected clearly; no current doc promises
-unavoidable local enforcement. No automatic conversion or rollback is required.
+**Done (2026-09-15):** no installed IronLint entry calls a removed command;
+unrelated settings survive; edited/unowned artifacts are preserved with a
+nonzero incomplete-cleanup result; v1 examples run; old config is rejected
+clearly; and no current doc promises unavoidable local enforcement. No automatic
+conversion or rollback is required.
 
 ### P4: release evidence
 
@@ -138,7 +185,7 @@ archive. Adapter captures stay in adapter-owned fixture directories.
 | Write without feedback is caught by full acceptance | P1 | Local Docker E2E passed |
 | Batch runs once per selected check; acceptance includes every check | P1/P4 | Core tests; local Docker E2E passed |
 | Output caps, total deadline, pipe-holding descendant cleanup | P4 | Baseline core tests; rerun on release tree |
-| Owned-entry removal preserves unrelated hooks and leaves no dead calls | P3 | Cleanup proof pending |
+| Owned-entry removal preserves unrelated hooks and leaves no dead calls | P3 | Local/global cleanup regressions and full workspace tests passed |
 
 **Local feature evidence (2026-09-14):** working tree based on
 `fc3936eee4da9d9becd31e485b82bac01edb3000`; `bash tests/e2e/features/run.sh`
@@ -152,7 +199,7 @@ suite passed again. Full Rust release validation remains P4 after P3 removal.
 
 Run `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`,
 `cargo fmt --all --check`, `bash scripts/ci-coverage.sh`, and
-`bash scripts/ci-adapters.sh` while legacy suites are active, and
+`bash scripts/ci-adapters.sh`, and
 `bash tests/e2e/features/run.sh` against the integrated tree. Use a temporary
 `XDG_CONFIG_HOME` for adapter tests; never exercise install/trust tests against the
 developer's live configuration. Keep per-file region coverage at least 80%.

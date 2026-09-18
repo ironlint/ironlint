@@ -7,7 +7,15 @@ fn write(p: &Path, body: &str) {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).unwrap();
     }
-    fs::write(p, body).unwrap();
+    if matches!(
+        p.extension().and_then(|ext| ext.to_str()),
+        Some("yml" | "yaml")
+    ) && !body.starts_with("version:")
+    {
+        fs::write(p, format!("version: 1\n{body}")).unwrap();
+    } else {
+        fs::write(p, body).unwrap();
+    }
 }
 
 fn cfg_with_script(dir: &Path) -> PathBuf {
@@ -266,7 +274,7 @@ fn bless_skips_worktree_entry_when_not_a_git_repo() {
     assert_eq!(s.entries.len(), 1, "direct entry still written");
 }
 
-// --- inherited + legacy lookup (Task 5) -------------------------------
+// --- inherited lookup --------------------------------------------------
 #[test]
 fn direct_miss_with_matching_worktree_entry_is_trusted() {
     // Bless primary; the SAME store has no direct entry for a sibling's
@@ -294,7 +302,7 @@ fn direct_miss_with_matching_worktree_entry_is_trusted() {
     // Direct miss, worktree hit:
     assert!(matches!(
         check_trust_in(&cfg, &store_path),
-        TrustOutcome::Trusted
+        TrustOutcome::Trusted(_)
     ));
 }
 
@@ -350,54 +358,44 @@ fn check_never_writes_store_on_inherited_trust() {
     );
 }
 
+/// Consent recorded by `init` must cover the bytes it classified, never a
+/// second read of the path: a writer that rewrites the config in between must
+/// leave the live file untrusted instead of silently approved.
 #[test]
-fn legacy_fallback_accepts_unchanged_sibling_in_same_scope() {
-    // Build a v1-style store: a direct entry keyed by an OLD canonical path
-    // that, when discovered, shares the current scope's common_dir +
-    // config_rel, with an unchanged direct hash. The sibling's canonical
-    // path differs from the current config's, so direct misses, but the
-    // legacy fallback proves the policy is the same.
-    //
-    // Easiest faithful construction: bless in a primary git repo (writes
-    // BOTH entries in v2), then DOWNGRADE the store to v1 shape by
-    // deleting worktree_entries — leaving only the direct entry. Then move
-    // the config to a different path within the SAME worktree root so the
-    // canonical key changes (direct miss) but scope.common_dir + a new
-    // config_rel...
-    //
-    // IMPLEMENTER NOTE: the legacy fallback's premise is "old direct entry
-    // for the SAME config path that still resolves to the same scope." The
-    // cleanest faithful test: bless, then strip worktree_entries (v1
-    // shape), then verify the SAME config (same path) is still trusted via
-    // the legacy fallback WITHOUT re-blessing. This proves the one-time
-    // upgrade convenience. See test below.
-    let root = tempfile::tempdir().unwrap();
-    git_repo(root.path());
-    let cfg = root.path().join(".ironlint.yml");
-    write(
-        &cfg,
-        "checks:
-  g:
-    files: \"*.rs\"
-    run: \"true\"
-",
-    );
-    let store = tempfile::tempdir().unwrap();
-    let store_path = store.path().join("trust.json");
-    bless_in(&cfg, &store_path, "t").unwrap();
-    // Downgrade to v1 shape: drop worktree_entries, keep the direct entry.
-    let mut s = read_store(&store_path).unwrap();
-    s.worktree_entries.clear();
-    write_store(&store_path, &s).unwrap();
-    let bytes_before = std::fs::read(&store_path).unwrap();
-    // Direct HIT actually (same path) — to exercise the FALLBACK we need a
-    // direct MISS with a v1 entry whose path still resolves. The faithful
-    // case is a linked sibling sharing scope; covered in the integration
-    // test (Task 6). Here, assert the store is NOT mutated by the lookup:
-    let _ = check_trust_in(&cfg, &store_path);
-    assert_eq!(
-        bytes_before,
-        std::fs::read(&store_path).unwrap(),
-        "legacy fallback is read-only"
-    );
+fn bless_bytes_binds_consent_to_the_supplied_bytes_not_a_later_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    let payload = "version: 1\nchecks:\n  pwn:\n    files: \"*\"\n    run: \"echo pwned\"\n";
+    // The live file holds the racing writer's content; consent covers the
+    // baseline bytes the caller classified before that write landed.
+    write(&cfg, payload);
+    let store = dir.path().join("trust.json");
+    let baseline = "version: 1\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
+
+    bless_bytes_in(&cfg, baseline.as_bytes(), &store, "2026-01-01T00:00:00Z").unwrap();
+
+    match check_trust_in(&cfg, &store) {
+        TrustOutcome::Untrusted(_) => {}
+        TrustOutcome::Trusted(_) => panic!("consent must not cover rewritten content"),
+        TrustOutcome::Unverifiable(e) => panic!("live policy should still be verifiable: {e:#}"),
+    }
+}
+
+/// The two bless entry points must record the same digest for identical
+/// content, so a policy blessed by `init` verifies under the path-based hash.
+#[test]
+fn bless_bytes_and_bless_record_the_same_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = cfg_with_script(dir.path());
+    let bytes = fs::read(&cfg).unwrap();
+    let byte_store = dir.path().join("byte.json");
+    let path_store = dir.path().join("path.json");
+
+    bless_bytes_in(&cfg, &bytes, &byte_store, "t").unwrap();
+    bless_in(&cfg, &path_store, "t").unwrap();
+
+    let key = canonical_key(&cfg).unwrap();
+    let byte_hash = read_store(&byte_store).unwrap().entries[&key].hash.clone();
+    let path_hash = read_store(&path_store).unwrap().entries[&key].hash.clone();
+    assert_eq!(byte_hash, path_hash);
 }

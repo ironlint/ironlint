@@ -1,26 +1,21 @@
 //! `ironlint doctor` diagnostic subcommand.
 //!
-//! Read-only. Walks a fixed list of gate-model static checks and prints a
+//! Read-only. Walks a fixed list of static checks and prints a
 //! checklist (human) or JSON report. Exit code: 0 on all-pass-or-warn, 1 on
 //! any fail.
 //!
-//! Checks kept for the gate model:
+//! Checks:
 //!   1. binary — ironlint binary + version (always pass once we're running)
 //!   2. config  — `.ironlint.yml` exists
-//!   3. parses  — config parses (extends resolved)
+//!   3. parses  — v1 policy parses
 //!   4. check_scripts — each check whose `run` names a single-token path that
 //!      starts with `.ironlint/scripts/` exists and is executable
 //!   5. trust — config + `.ironlint/scripts/` are blessed in the trust store
 //!      (warn, not fail: doctor is read-only; trust is enforced only at the
 //!      `check` layer)
-//!   6. adapters — one row per supported harness that is detected on this
-//!      machine or has ironlint installed: pass when installed+registered, fail
-//!      when registered-but-broken (hook artifact missing), warn otherwise
+//!   6. adapters — Pi when detected or installed
 //!   7. hooks — always-present summary row: warns when zero coding-agent hooks
 //!      are wired (the most common first-run failure mode)
-//!
-//! Dropped from the old model: schema_version probe, scope_globs (Rule-based),
-//! engine/EngineKind availability, capability sandbox row, baseline/runtime_state.
 
 use crate::cli::OutputFormat;
 use crate::commands::check;

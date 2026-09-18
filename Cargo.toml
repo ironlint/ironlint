@@ -1,18 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/ironlint-core", "crates/ironlint-cli", "crates/ironlint-bash-gate"]
+members = ["crates/ironlint-core", "crates/ironlint-cli"]
 
 [workspace.package]
-version = "0.12.1"
+version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ironlint/ironlint"
-# MSRV floor (readiness review S6 / Task 3.7). In-house code needs only 1.87
-# (gate.rs `u32::cast_signed()`), but the dependency tree raises the effective
-# floor to 1.88: darling 0.23, image 0.25, instability 0.3, and homedir 0.3
-# (pulled via ratatui/axoupdater/serde tooling) all require rustc 1.88, so the
-# locked graph is unbuildable on 1.87. CI enforces this via a dedicated MSRV
-# leg (see .github/workflows/ci.yml).
+# The locked dependency graph requires Rust 1.88; CI verifies this minimum.
 rust-version = "1.88"
 
 # Config for 'dist'
@@ -31,32 +26,19 @@ pr-run-mode = "plan"
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-# release.yml is hand-hardened beyond dist's template (the per-job `permissions:`
-# scoping — see the github-action-commits note below — which dist has no config
-# knob for), so it permanently diverges from `dist generate` output. Tell dist's
-# plan-time consistency check to accept the hand-edited CI file rather than
-# failing the release on it. Without this the `plan` job errors "run 'dist init'
-# to update the file". Task 3.6 hardening companion.
+# release.yml has hand-scoped permissions that dist cannot generate, so accept
+# that intentional difference during dist's consistency check.
 allow-dirty = ["ci"]
-# Supply-chain hardening (Task 3.6 / readiness review S4): pin the
-# third-party GitHub Actions dist emits into release.yml to immutable
-# commit SHAs instead of the mutable version tags it defaults to. This is
-# dist's own SHA-pinning mechanism (`github-action-commits`, since 0.29.0)
-# — a `dist generate` / `dist init` run reads this table and re-emits
-# release.yml with these pins intact, so the SHA pins below (unlike the
-# per-job `permissions:` scoping in release.yml, which dist has no config
-# knob for) survive regeneration. Keep in sync with the `# vX.Y.Z` comments
-# on the corresponding `uses:` lines in release.yml.
+# Keep generated third-party actions pinned to immutable commits. The version
+# comments in release.yml identify the corresponding upstream releases.
 [workspace.metadata.dist.github-action-commits]
 "actions/checkout" = "df4cb1c069e1874edd31b4311f1884172cec0e10" # v6.0.3
 "actions/upload-artifact" = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" # v7.0.1
 "actions/download-artifact" = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" # v8.0.1
 
 [workspace.lints.rust]
-# `deny` (not `forbid`) so per-block `#[allow(unsafe_code)]` is permitted
-# alongside a `// SAFETY:` justification. The capability sandbox needs
-# `clone(2)` for per-child namespace isolation (see B6 / capability.rs);
-# everything else stays unsafe-free.
+# `deny` allows a narrowly scoped exception with an adjacent safety rationale
+# if platform code ever requires one.
 unsafe_code = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unused_lifetimes = "warn"

@@ -1,190 +1,28 @@
-// pi adapter for IronLint. A pure translation layer between pi's extension
-// lifecycle and the `ironlint` CLI — it contains no rule logic. See
-// adapters/pi/README.md.
+// pi adapter for IronLint v1 completed-edit feedback.
+import { spawn } from "node:child_process"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 
-import { spawnSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
-import { basename, isAbsolute, join, sep } from "node:path"
-
-/** The shape of the input payload pi passes for `write` / `edit` tool calls. */
 export type PiToolInput = {
   path?: string
-  // pi's renderer tolerates `file_path` as a `path` alias.
   file_path?: string
-  // write tool: full post-write body.
-  content?: string
-  // edit tool: batch of replacements.
-  edits?: Array<{ oldText?: string; newText?: string }>
-  // edit tool: legacy single-edit form, normalized by pi into edits[].
-  oldText?: string
-  newText?: string
-  // bash tool: the raw shell command the agent wants to run.
-  command?: string
+  oldPath?: string
+  newPath?: string
+  old_path?: string
+  new_path?: string
+  from?: string
+  to?: string
+  paths?: string[]
 }
 
-type Edit = { oldText: string; newText: string }
-
-/**
- * Normalize an edit-tool input into a flat `{oldText,newText}[]`.
- *
- *   - `edits[]` (the canonical batch form) is validated member-by-member;
- *     any non-string `oldText`/`newText` poisons the whole batch -> null.
- *   - legacy top-level `{oldText,newText}` -> single-element array
- *     (missing `newText` defaults to "").
- *   - anything else (a write call, malformed input) -> null.
- *
- * Returns null when the input is not a recognizable edit (the caller then
- * skips the gate / falls back), never throws.
- */
-export function normalizeEdits(input: PiToolInput): Edit[] | null {
-  if (Array.isArray(input.edits)) {
-    const out: Edit[] = []
-    for (const e of input.edits) {
-      if (typeof e?.oldText !== "string" || typeof e?.newText !== "string") {
-        return null
-      }
-      out.push({ oldText: e.oldText, newText: e.newText })
-    }
-    return out.length > 0 ? out : null
-  }
-  if (typeof input.oldText === "string") {
-    return [
-      {
-        oldText: input.oldText,
-        newText: typeof input.newText === "string" ? input.newText : "",
-      },
-    ]
-  }
-  return null
-}
-
-/**
- * Compute the file body pi is about to write, so the gate can pipe it to
- * `ironlint check --content -`. See spec §5.1.
- *
- *   - `write` -> `input.content` (the full body), even for a new file.
- *     Non-string content (malformed call) -> null; pi would reject it too.
- *   - `edit`  -> read the current file, apply each `{oldText,newText}` in
- *     order. Each `oldText` must occur EXACTLY ONCE in the working buffer
- *     (mirrors pi's contract); on any miss or non-unique match -> null.
- *     A non-existent file -> null.
- *
- * We deliberately do NOT reproduce pi's fuzzy-match fallback — diverging
- * there would feed ironlint content pi won't actually write, risking false
- * blocks. Returning null skips the gate (fail-open on simulate-failure).
- */
-export function computeProposedContent(
-  toolName: string,
-  filePath: string,
-  input: PiToolInput,
-): string | null {
-  if (toolName === "write") {
-    return typeof input.content === "string" ? input.content : null
-  }
-  if (toolName === "edit") {
-    const edits = normalizeEdits(input)
-    if (edits === null) return null
-    if (!existsSync(filePath)) return null
-    let buf = readFileSync(filePath, "utf8")
-    for (const { oldText, newText } of edits) {
-      const first = buf.indexOf(oldText)
-      if (first === -1) return null
-      // Reject non-unique matches (and empty oldText, where first=0 and
-      // last=buf.length) so we never guess which occurrence pi means.
-      if (first !== buf.lastIndexOf(oldText)) return null
-      buf = buf.slice(0, first) + newText + buf.slice(first + oldText.length)
-    }
-    return buf
-  }
-  return null
-}
-
-// pi tools we gate. `bash` is gated by the bash-gate branch below, which
-// shells out to `ironlint gate-bash` (the shared Rust matcher) — closing the
-// "shell redirections are too brittle to parse" gap that previously kept bash
-// ungated. See
-// docs/architecture.md.
-const GATED_TOOLS = new Set(["write", "edit", "bash"])
-
-// R3: the policy surface. The config file (`.ironlint.yml` / `.bully.yml`,
-// matched by basename so it works for relative and absolute paths) AND every
-// file under `.ironlint/scripts/` (path-anchored to the project root so a
-// stray `src/.ironlint/scripts/foo.sh` is NOT matched). Edits to these
-// short-circuit the gate — checking a mid-edit policy file/script fails the
-// trust gate (sha mismatch) and surfaces a confusing internal error.
-const POLICY_FILES = new Set([".ironlint.yml", ".bully.yml"])
-
-/** R3: basename match for the config file + path-anchored match for the
- *  `.ironlint/scripts/` directory. `projectRoot` anchors the scripts check. */
-export function isPolicyFile(filePath: string, projectRoot: string): boolean {
-  if (POLICY_FILES.has(basename(filePath))) return true
-  const abs = isAbsolute(filePath) ? filePath : join(projectRoot, filePath)
-  const scriptsDir = join(projectRoot, ".ironlint", "scripts") + sep
-  return abs === scriptsDir.slice(0, -1) || abs.startsWith(scriptsDir)
-}
-
-/** pi uses `path`; `file_path` is tolerated as an alias. */
-export function getPath(input: PiToolInput): string | undefined {
-  return input.path ?? input.file_path
-}
-
+type PiContent = { type: string; text?: string; [key: string]: unknown }
 type ExecResult = { exitCode: number; stdout: string; stderr: string }
 
-/**
- * Invoke the `ironlint` binary (must be on PATH). Uses node:child_process
- * spawnSync for deterministic stdin (`input`) + exit code (`status`). `status`
- * is null only when the process was killed by a signal; map that to -1 so it
- * falls through to fail-open.
- */
-export function runIronLint(args: string[], input = ""): ExecResult {
-  const res = spawnSync("ironlint", args, { input, encoding: "utf8" })
-  return {
-    exitCode: typeof res.status === "number" ? res.status : -1,
-    stdout: res.stdout ?? "",
-    stderr: res.stderr ?? "",
-  }
-}
-
-/**
- * Shared exit-3 (engine-internal-error) policy: fail-open (log + allow) by
- * default; fail-closed (return a block) under IRONLINT_FAIL_CLOSED_ON_INTERNAL=1.
- * A misconfigured ironlint must never brick the agent.
- */
-function failOpenOrClosed(
-  kind: string,
-  stderr: string,
-): { block: true; reason: string } | undefined {
-  const suffix = stderr ? `: ${stderr}` : ""
-  if (process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] === "1") {
-    console.error(
-      `ironlint: internal error during ${kind} — failing closed (IRONLINT_FAIL_CLOSED_ON_INTERNAL=1)${suffix}`,
-    )
-    return { block: true, reason: `ironlint: internal error during ${kind} — failing closed` }
-  }
-  console.error(
-    `ironlint: internal error during ${kind} — allowing; see .ironlint/log.jsonl${suffix}`,
-  )
-  return undefined
-}
-
-/**
- * Translate a `ironlint check --format json` verdict into the user-facing block
- * reason pi surfaces. The CLI prints a Verdict JSON (schema_version 4) on
- * stdout; the human message lives in `blocks[].message` — surfacing raw stdout
- * would dump the whole JSON blob at the user. Falls back to a generic string
- * if stdout is not the expected JSON or carries no message.
- */
-export function blockReason(stdout: string): string {
-  try {
-    const verdict = JSON.parse(stdout) as { blocks?: Array<{ message?: unknown }> }
-    const messages = (verdict.blocks ?? [])
-      .map((b) => b?.message)
-      .filter((m): m is string => typeof m === "string" && m.length > 0)
-    if (messages.length > 0) return messages.join("\n")
-  } catch {
-    // Not the expected JSON (e.g. a future format change) — fall through.
-  }
-  return "policy violation"
+interface ToolResultEvent {
+  toolName?: string
+  input?: PiToolInput
+  content?: PiContent[]
+  isError?: boolean
 }
 
 /** Minimal structural view of the pi extension API the adapter relies on. */
@@ -194,91 +32,138 @@ export interface PiExtensionAPI {
   directory?: string
 }
 
-interface ToolCallEvent {
-  toolName?: string
-  toolCallId?: string
-  input?: PiToolInput
-}
-
-/** Resolve the project root. process.cwd() is the terminal-agent fallback. */
 function resolveRoot(pi: PiExtensionAPI): string {
   return pi.cwd ?? pi.directory ?? process.cwd()
 }
 
+function getPath(input: PiToolInput): string | undefined {
+  return input.path ?? input.file_path
+}
+
 /**
- * IronLint pi extension. Registers one lifecycle handler: the `tool_call`
- * pre-write gate that checks proposed `write` / `edit` content against the
- * project's `.ironlint.yml` policy before the tool executes.
+ * Returns known paths for a completed mutation. `undefined` means the tool
+ * changed something but did not report paths, so the v1 evaluator receives an
+ * unknown change set (no --file arguments).
  */
+export function changedPaths(toolName: string, input: PiToolInput): string[] | undefined {
+  switch (toolName) {
+    case "write":
+    case "edit":
+    case "delete":
+    case "unlink": {
+      const path = getPath(input)
+      return path ? [path] : undefined
+    }
+    case "rename":
+    case "move": {
+      const paths = [input.oldPath ?? input.old_path ?? input.from, input.newPath ?? input.new_path ?? input.to]
+        .filter((path): path is string => typeof path === "string" && path.length > 0)
+      return paths.length === 2 ? paths : undefined
+    }
+    case "batch":
+      return Array.isArray(input.paths) && input.paths.every((path) => typeof path === "string")
+        ? input.paths
+        : undefined
+    default:
+      return undefined
+  }
+}
+
+function trackedMutation(toolName: string): boolean {
+  return new Set(["write", "edit", "delete", "unlink", "rename", "move", "batch"]).has(toolName)
+}
+
+export function runIronLint(args: string[], root: string): Promise<ExecResult> {
+  return new Promise((resolve) => {
+    const child = spawn("ironlint", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+    const finish = (result: ExecResult) => {
+      if (!settled) {
+        settled = true
+        resolve(result)
+      }
+    }
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk
+    })
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk
+    })
+    child.on("error", (error: Error) => finish({ exitCode: -1, stdout, stderr: error.message }))
+    child.on("close", (code: number | null) => finish({ exitCode: code ?? -1, stdout, stderr }))
+  })
+}
+
+type VerdictResult = {
+  id?: unknown
+  outcome?: unknown
+  reason?: unknown
+  stdout?: unknown
+  stderr?: unknown
+}
+
+function diagnostic(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value.trim()
+  if (Array.isArray(value) && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    return Buffer.from(value).toString("utf8").trim()
+  }
+  return ""
+}
+
+export function feedback(stdout: string, fallback: string): string {
+  try {
+    const verdict = JSON.parse(stdout) as { results?: VerdictResult[]; error?: unknown }
+    const results = (verdict.results ?? []).filter(
+      (result) => result.outcome === "violation" || result.outcome === "error",
+    )
+    const lines = results.map((result) => {
+      const id = typeof result.id === "string" ? result.id : "check"
+      return `${id}: ${diagnostic(result.reason) || diagnostic(result.stderr) || diagnostic(result.stdout) || fallback}`
+    })
+    if (lines.length > 0) return lines.join("\n")
+    if (typeof verdict.error === "string" && verdict.error.trim()) return verdict.error.trim()
+  } catch {
+    // The reproduction command below remains useful when a future CLI changes JSON.
+  }
+  return fallback
+}
+
+function reproduction(args: string[]): string {
+  return `ironlint ${args.map((arg) => (/^[A-Za-z0-9_./:-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ")}`
+}
+
+function feedbackText(result: ExecResult, command: string, superseded: boolean): string {
+  const fallback = result.stderr.trim() || result.stdout.trim() || `ironlint exited ${result.exitCode}`
+  const prefix = result.exitCode === 2 ? "IronLint change feedback" : "IronLint could not evaluate this change"
+  const suffix = superseded ? "\nThis result was superseded by a newer edit." : ""
+  return `${prefix}: ${feedback(result.stdout, fallback)}\nReproduce: ${command}${suffix}`
+}
+
 export default function ironlintExtension(pi: PiExtensionAPI): void {
   const projectRoot = resolveRoot(pi)
   const configPath = join(projectRoot, ".ironlint.yml")
+  let newestEdit = 0
 
-  pi.on("tool_call", (event: ToolCallEvent) => {
+  pi.on("tool_result", async (event: ToolResultEvent) => {
     const toolName = event?.toolName
-    if (!toolName || !GATED_TOOLS.has(toolName)) return
-    const input = event?.input ?? {}
+    if (!toolName || !trackedMutation(toolName) || event.isError) return
 
-    // Bash branch: the bash-gate. Runs BEFORE the config-existence check —
-    // the bash-gate must fire even with no .ironlint.yml, since that's exactly
-    // when an agent is most motivated to run `ironlint trust`. Decides whether
-    // the command would let the agent free itself (`ironlint trust`, or a Bash
-    // write to `.ironlint.yml` / `.ironlint/scripts/`). The deny logic lives in
-    // `ironlint gate-bash` — the single source shared across every adapter.
-    // Every Bash call pays the gate: measured ~5.6ms/call with a release
-    // binary (100 invocations = 0.92s) — cheap next to the per-shim keyword
-    // drift a substring pre-filter would re-introduce.
-    if (toolName === "bash") {
-      const command = typeof input.command === "string" ? input.command : ""
-      const res = runIronLint(["gate-bash"], command)
-      if (res.exitCode === 0) return // allow
-      if (res.exitCode === 2) {
-        return { block: true, reason: res.stdout || "ironlint blocked this bash command" }
-      }
-      // Spawn failure (exitCode -1, signal death) / unexpected exit → fail
-      // CLOSED. The deny check is the thing being protected; a broken deny
-      // check is never a silent allow. Do NOT reuse failOpenOrClosed — that's
-      // the opposite posture (the file-gate fail-opens on internal errors).
-      return {
-        block: true,
-        reason: `ironlint: bash-gate failed (exit ${res.exitCode}) — fail-closed`,
-      }
-    }
+    const paths = changedPaths(toolName, event.input ?? {})
+    if (paths?.length === 0) return
 
-    // Late existence check: the extension may load before `ironlint init`.
-    // Re-checking here means mid-session init starts gating with no restart.
+    const edit = ++newestEdit
     if (!existsSync(configPath)) return
-    const filePath = getPath(input)
-    if (!filePath) return
-    if (isPolicyFile(filePath, projectRoot)) return // R3 self-edit short-circuit
 
-    const proposed = computeProposedContent(toolName, filePath, input)
-    if (proposed === null) return // can't faithfully simulate — skip the gate
-
-    const res = runIronLint(
-      ["check", "--file", filePath, "--content", "-", "--config", configPath, "--format", "json"],
-      proposed,
-    )
-    if (res.exitCode === 0) return // pass/warn -> allow
-    if (res.exitCode === 2) {
-      return { block: true, reason: blockReason(res.stdout) }
+    const args = ["check", "--event", "change", "--config", configPath, "--root", projectRoot, "--format", "json"]
+    if (paths) {
+      for (const path of paths) args.push("--file", path)
     }
-    if (res.exitCode === 3) {
-      return failOpenOrClosed("check", res.stderr.trim())
+    const result = await runIronLint(args, projectRoot)
+    if (result.exitCode === 0) return
+    return {
+      content: [...(event.content ?? []), { type: "text", text: feedbackText(result, reproduction(args), edit !== newestEdit) }],
     }
-    if (res.exitCode === 4) {
-      // Untrusted/tampered config (Task 3.2 / Finding C3): fail CLOSED,
-      // unlike the generic exit-1 catch-all below. An untrusted config must
-      // never be silently un-gated just because nobody re-ran `ironlint
-      // trust` after pulling a changed `.ironlint.yml`.
-      return {
-        block: true,
-        reason: "ironlint is configured here but not trusted — run 'ironlint trust' to enable checks",
-      }
-    }
-    // exit 1 / other -> config error: log + allow.
-    const suffix = res.stderr.trim() ? `: ${res.stderr.trim()}` : ""
-    console.error(`ironlint: internal error checking ${filePath} (exit ${res.exitCode})${suffix}`)
-    return
   })
 }

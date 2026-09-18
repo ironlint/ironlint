@@ -1,19 +1,19 @@
 //! CLI integration tests for `ironlint explain <file>` (checks model).
 //!
 //! Output format (from explain.rs):
-//!   <gate-id>  <match|skip>  files=<comma-joined globs>  run=<run>
+//!   <check-id>  <match|skip>  files=<comma-joined globs>  run=<run>
 
 use assert_cmd::Command;
 use tempfile::tempdir;
 
-const TWO_GATE_BODY: &str =
-    "checks:\n  ts-gate:\n    files: [\"**/*.ts\"]\n    run: \"true\"\n  rs-gate:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n";
+const TWO_CHECK_BODY: &str =
+    "version: 1\nchecks:\n  ts-check:\n    on: [change, accept]\n    files: [\"**/*.ts\"]\n    run: \"true\"\n  rs-check:\n    on: [change, accept]\n    files: [\"**/*.rs\"]\n    run: \"true\"\n";
 
 #[test]
-fn explain_shows_match_for_file_matching_gate() {
+fn explain_shows_match_for_file_matching_check() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".ironlint.yml");
-    std::fs::write(&cfg, TWO_GATE_BODY).unwrap();
+    std::fs::write(&cfg, TWO_CHECK_BODY).unwrap();
 
     let file = dir.path().join("lib.rs");
     std::fs::write(&file, "fn main() {}\n").unwrap();
@@ -24,6 +24,8 @@ fn explain_shows_match_for_file_matching_gate() {
             "explain",
             "--config",
             cfg.to_str().unwrap(),
+            "--root",
+            dir.path().to_str().unwrap(),
             file.to_str().unwrap(),
         ])
         .assert()
@@ -33,15 +35,15 @@ fn explain_shows_match_for_file_matching_gate() {
         .clone();
     let stdout = String::from_utf8_lossy(&out);
 
-    // rs-gate should match a .rs file.
+    // rs-check should match a .rs file.
     assert!(
-        stdout.contains("rs-gate") && stdout.contains("match"),
-        "expected `rs-gate match` in stdout, got: {stdout}"
+        stdout.contains("rs-check") && stdout.contains("change=match"),
+        "expected `rs-check match` in stdout, got: {stdout}"
     );
-    // ts-gate should skip a .rs file.
+    // ts-check should skip a .rs file.
     assert!(
-        stdout.contains("ts-gate") && stdout.contains("skip"),
-        "expected `ts-gate skip` in stdout, got: {stdout}"
+        stdout.contains("ts-check") && stdout.contains("change=skip"),
+        "expected `ts-check skip` in stdout, got: {stdout}"
     );
 }
 
@@ -49,7 +51,7 @@ fn explain_shows_match_for_file_matching_gate() {
 fn explain_line_format_contains_files_and_run() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".ironlint.yml");
-    std::fs::write(&cfg, TWO_GATE_BODY).unwrap();
+    std::fs::write(&cfg, TWO_CHECK_BODY).unwrap();
 
     let file = dir.path().join("lib.rs");
     std::fs::write(&file, "fn main() {}\n").unwrap();
@@ -60,6 +62,8 @@ fn explain_line_format_contains_files_and_run() {
             "explain",
             "--config",
             cfg.to_str().unwrap(),
+            "--root",
+            dir.path().to_str().unwrap(),
             file.to_str().unwrap(),
         ])
         .assert()

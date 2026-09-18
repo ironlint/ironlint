@@ -1,50 +1,48 @@
-# Adapter status
+# AI-tool integrations
 
-Core owns the versioned CLI contract. Each adapter domain or separate project owns
-its harness installation, event translation, runtime versions, and live testing.
-Core releases do not require a live harness matrix or one blessed adapter.
+IronLint works directly from the command line. Adapters are optional bridges
+that let a coding tool call IronLint while you work. Always run
+`ironlint check --event accept` in the workflow that decides a change is
+complete; an adapter does not replace that full check.
 
-The checked-in legacy adapters remain during owned-install cleanup. V1 adapter
-work and live qualification proceed independently; consult each adapter's
-capability record before claiming completed-edit support.
+## Available adapter
 
-| Existing adapter | Installation details | Capture evidence |
+Pi runs after a supported edit and shows feedback while leaving the edit in
+place.
+
+| Coding tool | What the adapter does | Details |
 | --- | --- | --- |
-| Claude Code | [README](../../adapters/claude-code/README.md) | Pending; synthetic tests |
-| Codex | [README](../../adapters/codex/README.md) | Pre-write apply_patch add/update |
-| pi | [README](../../adapters/pi/README.md) | Pending; synthetic tests |
-| OpenCode | [README](../../adapters/opencode/README.md) | Pending; synthetic tests |
+| Pi | Feedback after selected edits, using the policy shown in this guide | [Setup](../../adapters/pi/README.md) |
 
-`ironlint init` still creates unversioned config, installs these integrations,
-and installs a Git floor hook. Existing uninstall/ownership machinery is the
-starting point for cleanup. Preserve unrelated hooks, settings, and user edits
-before deleting commands installed entries invoke.
+The host tool controls which edits it sends to an adapter. Pi feedback is not
+an acceptance decision, so retain a full acceptance check in the workflow that
+decides work is complete.
 
-## Adapter-owned v1 contract
+## Install and remove an adapter
 
-Use a verified completed-edit/batch event. Translate known paths, including
-deletions/renames, into `change` evaluation. Return visible diagnostics and a
-reproduction command; keep edits. Suppress successes, bound synchronous execution,
-and label observed superseded results. No proposal reconstruction or gate-bash.
+Choose a tool explicitly:
 
-An adapter claiming live support needs real captures and visible red → repair →
-green proof for its own runtime. Pre-write captures do not prove this behavior.
-This is an adapter release requirement, not a core release gate. Core feature tests
-use the [local fixture harness](../../tests/e2e/features/README.md). Existing capture
-records stay intact until their suites are retired safely; unsupported adapters
-must not retain installed calls to removed commands.
+```sh
+ironlint init --harness pi
+ironlint init --uninstall --harness pi
+```
 
-## Timeout budget
+In an interactive terminal, `init` asks for confirmation before changing
+adapter files. In a noninteractive run, an explicit `--harness` selection is
+treated as confirmation; use `--dry-run` to preview it instead. Removal deletes
+only files IronLint can identify as its own. If an adapter file was edited,
+replaced, or shares its directory with your files, IronLint leaves the affected
+content for you to review. Your policy and execution-consent record are not
+removed. Use `--git-hook` only when you explicitly want the optional pre-commit
+acceptance hook; uninstall removes its owned marked section while preserving
+an existing user hook.
 
-Existing write hooks run checks sequentially; a host timeout may expire first.
-Consult each adapter README for current registrations. V1 feedback must fit the
-configured total deadline and verified host contract. No detached work or retries.
+Older IronLint releases could install Claude Code, Codex, and OpenCode
+adapters. New installation is disabled. To remove owned legacy installations,
+run `ironlint init --uninstall --harness all`; cleanup covers both local and
+global adapter locations. Edited or unrecognized files are left for manual
+review, and any cleanup error makes the command fail.
 
-## Contract fixtures
-
-`bash scripts/ci-adapters.sh` runs all four existing suites. Use temporary
-`XDG_CONFIG_HOME` locally. Preserve provenance and README capture-pending
-declarations while suites remain active. Capture procedures live in each
-`adapters/<harness>/fixtures/README.md`. Synthetic tests are not live proof.
-
-See [architecture](../architecture.md) and [the plan](../../plans/2026-09-05-ironlint-v1-implementation.md).
+Run `ironlint doctor` to inspect the local policy, shell, consent, and visible
+adapter files. It can report what exists on disk, but it cannot prove a host
+tool will send every edit through an adapter.

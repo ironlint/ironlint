@@ -1,28 +1,24 @@
 # IronLint documentation
 
-These pages describe the current checkout. V1 core/CLI evaluation is implemented;
-external acceptance, completed-edit feedback, and old-installation cleanup remain
-in progress. The [architecture](architecture.md) identifies existing behavior;
-the [active plan](../plans/2026-09-05-ironlint-v1-implementation.md) tracks remaining work.
+IronLint is a local, policy-based check runner for projects that use AI coding
+tools. A policy lists the commands your project wants to run; IronLint selects
+them for a changed path or runs the complete set before you accept work.
 
-## Use the implemented v1 evaluator
+## Start here
 
-- [Getting started](getting-started.md): build, write a policy, validate, consent, evaluate.
-- [Writing checks](writing-checks/README.md) and [recipes](writing-checks/recipes.md).
-- [Config schema](reference/config-schema.md) and [trigger paths](configuring/targeting-files.md).
-- [Running checks](operating/running-checks.md), [CLI](reference/cli.md), and [verdict JSON](reference/verdict-json.md).
-- [Inspecting config](operating/inspecting-config.md), [resolved output](reference/show-resolved-config.md), and [diagnostics](operating/diagnostics.md).
-- [Execution consent](security/trust.md).
+- [Getting started](getting-started.md): install from source, create a policy, and run it.
+- [Writing checks](writing-checks/README.md): define reliable project commands.
+- [Check recipes](writing-checks/recipes.md): starting points for common projects.
+- [Execution consent](security/trust.md): review commands before granting local permission.
 
-## Installation and other current surfaces
+## Use IronLint
 
-- [Adapters](adapters/README.md): existing installation status and v1 support gaps.
-- [Telemetry](operating/telemetry.md) and [watch](operating/watching-checks.md):
-  existing log consumers; v1 evaluation does not currently write their records.
+- [Running checks](operating/running-checks.md): choose `change` or `accept`.
+- [Targeting files](configuring/targeting-files.md): control early feedback.
+- [Inspecting a policy](operating/inspecting-config.md) and [diagnostics](operating/diagnostics.md).
+- [JSON results](reference/verdict-json.md), [policy reference](reference/config-schema.md), and [CLI reference](reference/cli.md).
 
-## Develop v1
+## Optional integrations
 
-- [Architecture](architecture.md): current code and responsibilities.
-- [V1 contract](../specs/2026-09-05-ironlint-v1-design.md): release semantics.
-- [Implementation plan](../plans/2026-09-05-ironlint-v1-implementation.md): work packets and evidence.
-- [Agent instructions](../AGENTS.md): working rules.
+- [AI-tool integrations](adapters/README.md): adapter behavior and safe removal.
+- [How IronLint works](architecture.md): the policy evaluation model and its limits.
