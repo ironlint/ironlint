@@ -16,6 +16,19 @@ approved inputs need renewed consent. Commands can invoke files elsewhere in
 the project, so review those files too; they are not part of this managed trust
 surface.
 
+`ironlint check` evaluates the exact policy bytes it verified rather than
+re-reading the policy path, and re-verifies the policy and every managed script
+before each check and once after the run. If they change mid-run, the remaining
+checks are `not_run` with reason `policy_changed`, the verdict is `error`, and
+the process exits 3 — a partial pass never looks like acceptance. A check that
+rewrites a managed script and then runs it is not a supported pattern; review
+the new content and grant consent again.
+
+`ironlint init` records consent for the baseline policy bytes it writes or
+recognizes, so a retry after a failed consent write completes instead of
+skipping consent, and a config you edited is never modified or blessed by
+`init`.
+
 `ironlint check` enforces consent. Read-only commands such as `validate`,
 `explain`, and `show-resolved-config` can inspect a policy without running it.
 An untrusted policy returns exit 4; invalid or unverifiable inputs can return
