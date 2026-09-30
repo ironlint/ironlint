@@ -1,10 +1,9 @@
 # Current work
 
 The [durability and simplification plan](2026-09-29-durability-simplification.md)
-is the active engineering plan. It covers the 2026-09-29 review findings and the
-per-check timeout extension, with ordered packets, regression requirements,
-compatibility decisions, and a pressure test. Implementation is in progress with
-sub-agents; the plan records current packet status and fresh verification.
+is complete. It records the implemented review fixes and per-check timeout
+extension, separate agent reviews, compatibility decisions, and fresh verification
+as of 2026-09-30. No engineering packet remains open.
 
 The completed [v1 release plan](2026-09-05-ironlint-v1-implementation.md) retains
 the verified release baseline. Tagging and publishing remain separate operator

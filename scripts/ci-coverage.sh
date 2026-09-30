@@ -44,9 +44,9 @@ REPORT="$(mktemp)"
 trap 'rm -f "${REPORT}"' EXIT
 
 echo "ci-coverage: collecting coverage (threshold: ${THRESHOLD}% per file)…"
-cargo llvm-cov --workspace --json --quiet --output-path "${REPORT}"
+cargo llvm-cov --locked --workspace --json --quiet --output-path "${REPORT}"
 
-# Walk every file in the report, comparing line coverage against the threshold.
+# Walk every file in the report, comparing region coverage against the threshold.
 # `awk` does the float compare to avoid bash's integer-only `(( ))`.
 # Paths are stripped down to a `crates/...` suffix by jq — anchoring on
 # `/crates/` rather than the absolute repo root sidesteps macOS case-folding

@@ -6,14 +6,14 @@ Guidance for work in this repository.
 
 - [Current architecture](docs/architecture.md): implemented behavior and source map.
 - [V1 contract](specs/2026-09-05-ironlint-v1-design.md): release requirements.
-- [Active plan](plans/2026-09-29-durability-simplification.md): resume block,
-  current packet, dependencies, and evidence.
+- [Engineering follow-up](plans/2026-09-29-durability-simplification.md): completed
+  packets, compatibility decisions, and fresh verification evidence.
 - [V1 release baseline](plans/2026-09-05-ironlint-v1-implementation.md): completed
   release packets and verification evidence. Read only the relevant packet and
   contract sections before tracing code; do not load the whole documentation tree.
 
-Keep these documents current when behavior or scope changes. The active follow-up
-plan covers separately authorized engineering work; the completed v1 plan retains
+Keep these documents current when behavior or scope changes. The follow-up plan
+records separately authorized engineering work; the completed v1 plan retains
 its release evidence. Do not duplicate execution plans, create a historical
 planning archive, or revive removed roadmap items.
 
@@ -24,7 +24,9 @@ policies use `run`, optional `files`, and `on: [accept]` or `[change, accept]`.
 The versioned core/CLI, schema-7 output, bounded execution, local consent, and
 read-only inspection are implemented. Unversioned configuration and the former
 execution paths have been removed. `ironlint schema` and `init` both expose the
-v1 format. Core release verification uses local Docker feature E2E tests.
+v1 format. Optional check-level `timeout_secs` requires evaluator 1.1.0 or newer
+and cannot extend the total invocation budget. Core release verification uses
+local Docker feature E2E tests.
 Harness compatibility and external enforcement qualification belong to
 adapter/integration owners, not the core release gate.
 

@@ -11,18 +11,19 @@
 # at compile time. The COPYs below are ordered so editing the test scripts does
 # not invalidate the (slow) cargo build layer.
 
-FROM rust:1-bookworm AS build
+FROM rust:1.88-bookworm AS build
 WORKDIR /src
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY adapters ./adapters
-RUN cargo build --release -p ironlint-cli && cp target/release/ironlint /ironlint
+RUN cargo build --locked --release -p ironlint-cli && cp target/release/ironlint /ironlint
 
-# Minimal runtime: `ironlint init` writes files and patches JSON itself (in Rust),
-# and this test never executes the harnesses — so no jq/node/bun/real harnesses
-# are needed, only the binary, bash, and coreutils (all in debian-slim).
+# The test never executes a live harness. Git is needed by doctor's optional
+# hook-path inspection; node/bun and real harness installations are unnecessary.
 FROM debian:bookworm-slim
-RUN useradd --create-home --uid 1000 tester
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 tester
 COPY --from=build /ironlint /usr/local/bin/ironlint
 COPY tests/e2e/init/drive.sh /usr/local/bin/drive.sh
 USER tester

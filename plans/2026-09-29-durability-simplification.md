@@ -4,13 +4,14 @@
 
 - **Authorization:** the user requested implementation of this plan with
   sub-agents, including the per-check timeout follow-up.
-- **Status:** D1–D8 are implemented and independently reviewed. All review
-  findings are fixed with failing regressions and independently rechecked.
-- **Next packet:** D9 integrated verification, graph refresh, cleanup, and final
-  evidence. Batch C passes 516 Rust tests across 30 suites, 37 Pi tests,
-  TypeScript checking, strict all-target Clippy, and formatting. The Docker
-  feature suite passes. Coverage, MSRV, Windows compilation, and the repaired
-  Docker onboarding fixture remain final gates.
+- **Status:** D0–D9 complete as of 2026-09-30. All implementation batches were
+  independently reviewed; findings were fixed with failing regressions and
+  independently rechecked. The final gates and cleanup are complete.
+- **Next packet:** none. Final verification passes 516 Rust tests across 30
+  suites, 37 Pi tests, TypeScript checking, strict all-target Clippy, formatting,
+  and both local Docker suites. Region coverage is 93.93% overall and at least
+  80% in every Rust file. Rust 1.88 builds and passes the same 516 tests.
+  Windows production code compiles; native Windows execution remains unqualified.
 - **Baseline:** the completed [v1 release plan](2026-09-05-ironlint-v1-implementation.md)
   records verification of `4828bfcd1811a1ef51c728bb32b977005d952713`.
   The review observed HEAD `e23b18c0e7e629b5a339d4391ef8cec696bed0ae`, a subsequent
@@ -28,8 +29,8 @@
   [Architecture](../docs/architecture.md) describes implemented behavior; the
   decisions below describe proposed behavior until their packets are complete.
 - **Completion:** integrated fixes, the timeout extension, updated documentation,
-  separate agent reviews, and the local validation gates. Tagging and publishing
-  remain separately authorized actions.
+  separate agent reviews, graph refresh, cleanup, and local validation gates are
+  finished. Tagging and publishing remain separately authorized actions.
 
 ## Scope and design decisions
 
@@ -82,7 +83,7 @@ renew consent. Runtime safety constants stay in code and are tested.
 | D6 | Add per-check timeout override | D5 | B | Complete |
 | D7 | Bound and cancel Pi subprocess runs | D6 | C | Complete |
 | D8 | Replace the installation TUI with plain confirmation | D3 | C | Complete |
-| D9 | Verify the integrated tree and update evidence | D7, D8 | Final | In progress |
+| D9 | Verify the integrated tree and update evidence | D7, D8 | Final | Complete |
 
 The ordering stabilizes user-visible failures before moving shared abstractions.
 After batches A, B, and C, request a separate agent review scoped to the changed
@@ -650,5 +651,30 @@ Required edits: NONE; the protections above are already included in the packets.
 | D0 | `e23b18c` plus planning/user hook changes | Failed downloader and partial download regressions return false success on unchanged updater | `cargo test --locked`: 397 passed, 24 suites (Rust 1.96.1) | n/a | Complete |
 | A: D1–D3 | `c677ce0` | Masked shell failures; file collision/mode/ownership/symlink defects; all 13 diagnostic cases; partial first-backup publication; writable updater handle and inactive Git-hook regressions | Integrated: 463 tests / 25 suites. Focused fixes: 22 updater unit, 18 diagnostic/update integration, 12 filesystem, 14 Git unit, 8 Git integration. All-target Clippy and format clean | Separate agent found updater write-access and inactive-hook defects; both fixed and rechecked closed | Complete |
 | B: D4–D6 | `33f417a` | D4: supplied bytes A incorrectly approved live bytes B through inherited worktree consent. D5: expired verification still launches a command; expired final verification reports pass; continuous drain ignores cancellation; empty selection bypasses expiry. D6: unsupported field/inspection; shorter/longer overrides ignored by global-only runner | Integrated: 504 Rust tests / 28 suites (15.81s), then all-target Clippy and format clean, strictly serial. Core timeout 8, runner 9, focused CLI 175 / 6 suites. Shipped skill validation passes; schema example parses | Independent PASS; empty-selection finding fixed and rechecked, no open findings | Complete |
-| C: D7–D8 | Tested working tree after `33f417a`; local commit below | D7: overflow/hang leaves child running, stderr unbounded, newer mutation does not cancel, malformed exit-zero output suppressed; real CLI check survives evaluator cancellation; invalid UTF-8 repaired into false success. D8: PTY EOF authorizes installation; automatic cleanup treats an unowned harness directory as installed | Integrated: 516 Rust tests / 30 suites (16.36s), 37 Pi tests, typecheck, strict Clippy/fmt. Focused setup: 44 unit, 11 onboarding, 7 PTY, 10 scaffold, 3 dry-run, 8 Git. Controlled Rust 1.96.1/aarch64 release: 2,842,608 → 2,518,432 bytes (11.4% smaller); external normal dependencies 103 → 59; locked packages 266 → 145, no added or changed versions. Pi/skill pinned to B in both builds | Independent PASS; real cancellation and strict UTF-8 findings fixed and rechecked, setup 29 independent tests; no open findings | Complete |
-| D9 | Working tree after batch C | Onboarding image lacks Git required by new optional-hook inspection | Docker feature suite and shell verifier tests pass; remaining gates running | Harness changes independently reviewed; onboarding runtime dependency fix under review | In progress |
+| C: D7–D8 | `fb76308` | D7: overflow/hang leaves child running, stderr unbounded, newer mutation does not cancel, malformed exit-zero output suppressed; real CLI check survives evaluator cancellation; invalid UTF-8 repaired into false success. D8: PTY EOF authorizes installation; automatic cleanup treats an unowned harness directory as installed | Integrated: 516 Rust tests / 30 suites (16.36s), 37 Pi tests, typecheck, strict Clippy/fmt. Focused setup: 44 unit, 11 onboarding, 7 PTY, 10 scaffold, 3 dry-run, 8 Git. Controlled Rust 1.96.1/aarch64 release: 2,842,608 → 2,518,432 bytes (11.4% smaller); external normal dependencies 103 → 59; locked packages 266 → 145, no added or changed versions. Pi/skill pinned to B in both builds | Independent PASS; real cancellation and strict UTF-8 findings fixed and rechecked, setup 29 independent tests; no open findings | Complete |
+| D9 | `fb76308` + test/harness/documentation changes in this final commit | Onboarding image lacks Git required by new optional-hook inspection; instrumented updater success test exceeds short fake-download deadline | Final native: 516 tests / 30 suites (21.34s), strict Clippy (1.41s), fmt. Coverage: 93.93% regions, all files ≥80%. Isolated adapter script: 37 tests; typecheck passes. Rust 1.88 build and 516 tests pass. Windows production workspace check passes. Both Docker suites and both acceptance-wrapper test scripts pass | Harness/runtime dependency fix and test-only completion-budget correction independently PASS; no open findings | Complete |
+
+### Final verification scope and cleanup
+
+- Runtime implementation is recorded in `c677ce0`, `33f417a`, and `fb76308`.
+  Final verification includes the subsequent test-only updater timing correction,
+  locked CI/coverage builds, mixed-timeout Docker scenario, and onboarding image
+  dependency correction. Native gates ran serially against the repository target;
+  Docker builds used separate container filesystems.
+- Rust/Cargo 1.96.1 on `aarch64-apple-darwin` ran the final native gates.
+  Rust 1.88 ran the build and complete test suite; both Docker images also built
+  on Rust 1.88. The `x86_64-pc-windows-msvc` check is compilation evidence only
+  (one existing Unix-only signal-variant dead-code warning). No native Windows
+  runtime or live Pi event-delivery/enforcement qualification is claimed.
+- `graft build` refreshed 93 source cards, 1,319 nodes, and 1,616 edges after
+  removing 21 generated cards with stale provenance and no manual notes. The
+  graph remains an ignored local cache; no model-backed graph rebuild ran.
+- Applied `cleanup-build-artifacts`: removed the controlled measurement checkout,
+  task coverage output, two task-created onboarding run directories, and task
+  Docker images. Preserved the normal debug/adapter cache, pre-existing release
+  binary (SHA-256 `28255a8ed10e3eb9e19246b48c6b3afb921fb31357d45e07c5e78649553a1f06`),
+  prior run artifacts, and the user's hook removal/backup.
+- The first local commit triggered the existing Repowise post-commit hook, whose
+  log showed source snippets sent to its configured model service. The owned
+  updater process was stopped; subsequent commits used a one-command hook-path
+  override. The user's hook configuration and unrelated processes were preserved.

@@ -134,6 +134,39 @@ verdict '.status == "error" and .results[0].reason == "timeout" and .not_run[0].
 denies
 echo 'ok: timeout stops remaining checks and denies acceptance'
 
+# Policy overrides affect the real evaluator without changing the consumer's
+# requirement for a complete acceptance result from every selected check.
+cat >"$IRONLINT_POLICY" <<'YAML'
+version: 1
+execution:
+  timeout_secs: 1
+  total_timeout_secs: 10
+checks:
+  a_quick:
+    timeout_secs: 1
+    run: "true"
+    on: [change, accept]
+  b_slow:
+    timeout_secs: 3
+    run: sleep 1.2
+    on: [change, accept]
+  z_later:
+    run: "true"
+    on: [change, accept]
+YAML
+export IRONLINT_ACCEPTANCE_CHECKS='a_quick,b_slow,z_later'
+ironlint trust --config "$IRONLINT_POLICY" >/dev/null
+expect 0 ironlint-fixture-harness change
+verdict '.schema == 7 and .status == "pass" and [.results[].id] == ["a_quick","b_slow","z_later"] and .not_run == []'
+accepts
+sed -i 's/timeout_secs: 3/timeout_secs: 1/' "$IRONLINT_POLICY"
+expect 4 ironlint-fixture-harness change
+ironlint trust --config "$IRONLINT_POLICY" >/dev/null
+expect 3 ironlint-fixture-harness change
+verdict '.status == "error" and .results[0].outcome == "pass" and .results[1].reason == "timeout" and .not_run[0].id == "z_later"'
+denies
+echo 'ok: mixed per-check budgets preserve complete acceptance and truthful incomplete results'
+
 printf 'version: 1\nchecks:\n  missing: {run: "ironlint-fixture-command-that-does-not-exist"}\n' >"$IRONLINT_POLICY"
 export IRONLINT_ACCEPTANCE_CHECKS=missing
 ironlint trust --config "$IRONLINT_POLICY" >/dev/null

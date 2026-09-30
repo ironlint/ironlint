@@ -557,6 +557,17 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn completion_limits() -> UpdateLimits {
+        // Completion tests allow instrumented process startup under parallel
+        // load; only the hung-process regressions need short deadlines.
+        UpdateLimits {
+            download: Duration::from_secs(10),
+            total: Duration::from_secs(20),
+            cleanup: Duration::from_secs(1),
+        }
+    }
+
+    #[cfg(unix)]
     fn assert_no_temporary_installer(dir: &Path) {
         assert!(!std::fs::read_dir(dir).unwrap().any(|entry| {
             entry
@@ -589,7 +600,7 @@ mod tests {
             &downloader,
             Path::new("/bin/sh"),
             dir.path(),
-            short_limits(),
+            completion_limits(),
         );
         assert_eq!(outcome, Outcome::Updated);
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "success");
@@ -602,13 +613,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("absent");
         assert_failed(
-            run_installer_with(&missing, Path::new("/bin/sh"), dir.path(), short_limits()),
+            run_installer_with(
+                &missing,
+                Path::new("/bin/sh"),
+                dir.path(),
+                completion_limits(),
+            ),
             "spawn download",
         );
         assert_no_temporary_installer(dir.path());
         let downloader = fake_download(dir.path(), "exit 0", "exit 0");
         assert_failed(
-            run_installer_with(&downloader, &missing, dir.path(), short_limits()),
+            run_installer_with(&downloader, &missing, dir.path(), completion_limits()),
             "spawn installer",
         );
         assert_no_temporary_installer(dir.path());
@@ -624,7 +640,7 @@ mod tests {
                 &downloader,
                 Path::new("/bin/sh"),
                 dir.path(),
-                short_limits(),
+                completion_limits(),
             ),
             "installer exited with code 13",
         );
@@ -766,7 +782,7 @@ mod tests {
                 &downloader,
                 Path::new("/bin/sh"),
                 dir.path(),
-                short_limits(),
+                completion_limits(),
             ),
             "failed to remove temporary installer",
         );
