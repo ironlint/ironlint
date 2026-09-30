@@ -40,6 +40,8 @@ pub(crate) enum V1ExecutionError {
     Timeout,
     DeadlineOverflow,
     TotalTimeoutBeforeSpawn,
+    CancelledBeforeSpawn,
+    Cancelled,
     Signal(i32),
     HighExit(i32),
     Spawn(String),
@@ -81,7 +83,7 @@ fn run_v1(
             false,
         );
     };
-    run_v1_until(run, env, check_timeout, deadline)
+    run_v1_until(run, env, check_timeout, deadline, &AtomicBool::new(false))
 }
 
 /// Run under the caller's unchanged absolute invocation deadline.
@@ -90,10 +92,11 @@ pub(crate) fn run_v1_until(
     env: &V1ExecutionEnv<'_>,
     check_timeout: Duration,
     total_deadline: Instant,
+    cancellation: &AtomicBool,
 ) -> V1ExecutionResult {
-    if Instant::now() >= total_deadline {
+    if let Some(error) = before_spawn_error(total_deadline, cancellation) {
         return result(
-            V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn),
+            V1ExecutionOutcome::Error(error),
             None,
             &[],
             &[],
@@ -118,9 +121,9 @@ pub(crate) fn run_v1_until(
     }
 
     let now = Instant::now();
-    if now >= total_deadline {
+    if let Some(error) = before_spawn_error(total_deadline, cancellation) {
         return result(
-            V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn),
+            V1ExecutionOutcome::Error(error),
             None,
             &[],
             &[],
@@ -167,29 +170,13 @@ pub(crate) fn run_v1_until(
     let draining = Arc::new(AtomicBool::new(true));
     let stdout_done = spawn_drain(stdout_pipe, Arc::clone(&stdout), Arc::clone(&draining));
     let stderr_done = spawn_drain(stderr_pipe, Arc::clone(&stderr), Arc::clone(&draining));
-    let status = match child.wait_timeout(deadline.saturating_duration_since(Instant::now())) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            stop_child(&mut child);
-            reap_child(&mut child);
-            wait_for_drain(&stdout_done, &stderr_done, Instant::now(), &draining);
-            return captured_result(
-                V1ExecutionOutcome::Error(V1ExecutionError::Timeout),
-                None,
-                &stdout,
-                &stderr,
-            );
-        }
+    let status = match wait_for_command(&mut child, deadline, cancellation) {
+        Ok(status) => status,
         Err(error) => {
             stop_child(&mut child);
             reap_child(&mut child);
             wait_for_drain(&stdout_done, &stderr_done, Instant::now(), &draining);
-            return captured_result(
-                V1ExecutionOutcome::Error(V1ExecutionError::Spawn(error.to_string())),
-                None,
-                &stdout,
-                &stderr,
-            );
+            return captured_result(V1ExecutionOutcome::Error(error), None, &stdout, &stderr);
         }
     };
 
@@ -197,6 +184,37 @@ pub(crate) fn run_v1_until(
     wait_for_drain(&stdout_done, &stderr_done, Instant::now(), &draining);
     let (exit_code, outcome) = classify(status);
     captured_result(outcome, exit_code, &stdout, &stderr)
+}
+
+fn before_spawn_error(until: Instant, cancellation: &AtomicBool) -> Option<V1ExecutionError> {
+    if cancellation.load(Ordering::Relaxed) {
+        Some(V1ExecutionError::CancelledBeforeSpawn)
+    } else if Instant::now() >= until {
+        Some(V1ExecutionError::TotalTimeoutBeforeSpawn)
+    } else {
+        None
+    }
+}
+
+fn wait_for_command(
+    child: &mut Child,
+    until: Instant,
+    cancellation: &AtomicBool,
+) -> Result<ExitStatus, V1ExecutionError> {
+    loop {
+        if cancellation.load(Ordering::Relaxed) {
+            return Err(V1ExecutionError::Cancelled);
+        }
+        let remaining = until.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(V1ExecutionError::Timeout);
+        }
+        match child.wait_timeout(remaining.min(Duration::from_millis(10))) {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => return Err(V1ExecutionError::Spawn(error.to_string())),
+        }
+    }
 }
 
 fn result(
@@ -444,10 +462,28 @@ mod tests {
             &env(dir.path(), "accept"),
             Duration::from_secs(30),
             Instant::now(),
+            &AtomicBool::new(false),
         );
         assert_eq!(
             output.outcome,
             V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn)
+        );
+        assert!(!dir.path().join("marker").exists());
+    }
+
+    #[test]
+    fn d7_cancelled_executor_never_spawns() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = run_v1_until(
+            "touch marker",
+            &env(dir.path(), "accept"),
+            Duration::from_secs(30),
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(true),
+        );
+        assert_eq!(
+            output.outcome,
+            V1ExecutionOutcome::Error(V1ExecutionError::CancelledBeforeSpawn)
         );
         assert!(!dir.path().join("marker").exists());
     }

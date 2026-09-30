@@ -27,12 +27,17 @@ ironlint init --harness pi
 ironlint init --uninstall --harness pi
 ```
 
-In an interactive terminal, `init` asks for confirmation before changing
-adapter files. In a noninteractive run, an explicit `--harness` selection is
-treated as confirmation; use `--dry-run` to preview it instead. Removal deletes
-only files IronLint can identify as its own. If an adapter file was edited,
-replaced, or shares its directory with your files, IronLint leaves the affected
-content for you to review. Your policy and execution-consent record are not
+In an interactive terminal, `init` prints the installation plan and asks for a
+line-based confirmation. Detected Pi is selected by default; installing Pi
+when it was not detected requires an affirmative answer. EOF or cancellation
+declines. In a noninteractive run, an explicit `--harness` selection is
+treated as confirmation; use `--dry-run` to preview it instead. Automatic
+noninteractive installation of detected Pi needs `--yes`; installing undetected
+Pi requires explicit `--harness pi`.
+
+Removal deletes only files IronLint can identify as its own. If an adapter file
+was edited, replaced, or shares its directory with your files, IronLint leaves
+the affected content for you to review. Your policy and execution-consent record are not
 removed. Use `--git-hook` only when you explicitly want the optional pre-commit
 acceptance hook; uninstall removes its owned marked section while preserving
 an existing user hook.
@@ -42,6 +47,12 @@ adapters. New installation is disabled. To remove owned legacy installations,
 run `ironlint init --uninstall --harness all`; cleanup covers both local and
 global adapter locations. Edited or unrecognized files are left for manual
 review, and any cleanup error makes the command fail.
+
+Interactive automatic uninstall lists owned registrations and confirms their
+cleanup. Pi uses the selected scope: project by default, or global with `--global`.
+Legacy cleanup inspects both local and global locations. Use explicit flags for
+scripts; `--dry-run` previews without prompting or writing, and `--yes` confirms
+the printed plan.
 
 Run `ironlint doctor` to inspect the local policy, shell, consent, and visible
 adapter files. It can report what exists on disk, but it cannot prove a host

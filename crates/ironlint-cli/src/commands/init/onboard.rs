@@ -4,10 +4,10 @@ use super::select;
 use super::Options;
 use anyhow::{anyhow, Result};
 use ironlint_core::adapter::{
-    all_harnesses, detect, install, install_skill, plan_install, plan_uninstall, uninstall,
-    uninstall_skill, AdapterEnv, Harness, InstallResult, Scope,
+    all_harnesses, detect, install, install_skill, plan_install, plan_uninstall, status, uninstall,
+    uninstall_skill, AdapterEnv, Harness, HarnessKind, InstallResult, PlanStep, Scope,
 };
-use std::io::{IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,8 +23,13 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         Scope::Local
     };
     let mut selected = resolve_harnesses(env, opts)?;
-    if selected.is_empty() && !std::io::stdin().is_terminal() {
-        println!("no supported harness detected; run `ironlint init --harness pi` to wire pi");
+    let default_yes = prepare_selection(&mut selected, opts, std::io::stdin().is_terminal());
+    if selected.is_empty() {
+        if opts.uninstall {
+            println!("no supported harness detected; nothing to uninstall");
+        } else {
+            println!("no supported harness detected; run `ironlint init --harness pi` to wire pi");
+        }
         // The optional git hook is independent of harness selection.
         floor_step(env, opts)?;
         return Ok(0);
@@ -34,11 +39,11 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         "{}",
         render_plan(&plans, opts.uninstall, env, std::io::stdout().is_terminal())
     );
+    print_floor_plan(env, opts)?;
     if opts.dry_run {
-        print_floor_plan(env, opts)?;
         return Ok(0);
     }
-    match confirm_gate(opts, &mut selected)? {
+    match confirm_gate(opts, &selected, default_yes)? {
         Proceed::No => return Ok(0),
         Proceed::Yes => {}
     }
@@ -117,56 +122,75 @@ fn resolve_harnesses(env: &AdapterEnv, opts: &Options) -> Result<Vec<(String, So
         return Ok(names.into_iter().map(|n| (n, Source::Requested)).collect());
     }
     let registry = all_harnesses();
+    if opts.uninstall {
+        let scope = if opts.global {
+            Scope::Global
+        } else {
+            Scope::Local
+        };
+        return Ok(registry
+            .iter()
+            .filter(|harness| {
+                operation_scopes(harness, scope, true)
+                    .into_iter()
+                    .any(|scope| {
+                        // Keep inspection errors visible: applying cleanup reports the
+                        // path/error instead of silently omitting a broken install.
+                        has_owned_install(harness, env, scope).unwrap_or(true)
+                    })
+            })
+            .map(|harness| (harness.name.to_string(), Source::Detected))
+            .collect());
+    }
     Ok(detect(env)
         .into_iter()
         .filter(|(name, found)| {
             *found
-                && (opts.uninstall
-                    || registry
-                        .iter()
-                        .find(|h| h.name == *name)
-                        .is_some_and(|h| h.installable))
+                && registry
+                    .iter()
+                    .find(|h| h.name == *name)
+                    .is_some_and(|h| h.installable)
         })
         .map(|(n, _)| (n.to_string(), Source::Detected))
         .collect())
 }
 
-/// Build `SelectItem`s from the resolved harness set. Detected harnesses are
-/// pre-checked; undetected harnesses are shown but unchecked.
-fn build_items(selected: &[(String, Source)], uninstalling: bool) -> Vec<select::SelectItem> {
-    all_harnesses()
-        .iter()
-        .filter(|h| uninstalling || h.installable)
-        .map(|h| {
-            let is_selected = selected.iter().any(|(n, _)| n == h.name);
-            select::SelectItem {
-                name: h.name.to_string(),
-                detected: is_selected,
-                selected: is_selected,
+fn has_owned_install(harness: &Harness, env: &AdapterEnv, scope: Scope) -> Result<bool> {
+    let state = status(harness, env, scope)?;
+    if state.intact.is_some()
+        || (matches!(&harness.kind, HarnessKind::JsonHook(_)) && state.registered)
+    {
+        return Ok(true);
+    }
+    for step in plan_uninstall(harness, env, scope) {
+        if let PlanStep::Skill { path } = step {
+            for record in [
+                ironlint_core::adapter::sidecar_path(&path),
+                ironlint_core::adapter::pending_sidecar_path(&path),
+            ] {
+                if ironlint_core::filesystem::regular_file(&record)?.is_some() {
+                    return Ok(true);
+                }
             }
-        })
-        .collect()
+        }
+    }
+    Ok(false)
 }
 
-/// Reconcile the names returned by the multi-select back into `(name, Source)`
-/// pairs, preserving `Detected` for items that were originally detected.
-fn reconcile(chosen: Vec<String>, selected: &[(String, Source)]) -> Vec<(String, Source)> {
-    let originally_detected: std::collections::HashSet<String> = selected
-        .iter()
-        .filter(|(_, s)| matches!(s, Source::Detected))
-        .map(|(n, _)| n.clone())
-        .collect();
-    chosen
-        .into_iter()
-        .map(|n| {
-            let src = if originally_detected.contains(&n) {
-                Source::Detected
-            } else {
-                Source::Requested
-            };
-            (n, src)
-        })
-        .collect()
+/// Preview an undetected Pi only for interactive choice. It is not a default
+/// installation: the plan requires an affirmative answer. `--yes` accepts the
+/// detected set; explicit `--harness pi` authorizes undetected installation.
+fn prepare_selection(
+    selected: &mut Vec<(String, Source)>,
+    opts: &Options,
+    interactive: bool,
+) -> bool {
+    if selected.is_empty() && interactive && !opts.uninstall && !opts.yes {
+        selected.push(("pi".into(), Source::Requested));
+        false
+    } else {
+        true
+    }
 }
 
 /// Build the render-ready plan for the selected harnesses.
@@ -216,20 +240,35 @@ fn operation_scopes(harness: &Harness, requested: Scope, uninstalling: bool) -> 
 
 /// Decide whether to proceed past the plan. `--yes` and explicit non-TTY
 /// proceed; auto-detect non-TTY prints a hint and stops; TTY prompts.
-fn confirm_gate(opts: &Options, selected: &mut Vec<(String, Source)>) -> Result<Proceed> {
-    confirm_gate_to(opts, selected, &mut std::io::stdout())
+fn confirm_gate(
+    opts: &Options,
+    selected: &[(String, Source)],
+    default_yes: bool,
+) -> Result<Proceed> {
+    let stdin = std::io::stdin();
+    confirm_gate_to(
+        opts,
+        selected,
+        stdin.is_terminal(),
+        default_yes,
+        &mut stdin.lock(),
+        &mut std::io::stdout(),
+    )
 }
 
-fn confirm_gate_to<W: Write>(
+fn confirm_gate_to<R: BufRead, W: Write>(
     opts: &Options,
-    selected: &mut Vec<(String, Source)>,
+    selected: &[(String, Source)],
+    interactive: bool,
+    default_yes: bool,
+    reader: &mut R,
     writer: &mut W,
 ) -> Result<Proceed> {
     if opts.yes {
         return Ok(Proceed::Yes);
     }
     let explicit = !opts.harnesses.is_empty();
-    if !std::io::stdin().is_terminal() {
+    if !interactive {
         if explicit {
             return Ok(Proceed::Yes);
         }
@@ -244,20 +283,7 @@ fn confirm_gate_to<W: Write>(
         )?;
         return Ok(Proceed::No);
     }
-    if opts.harnesses.is_empty() {
-        let chosen = select::prompt_multi_select(build_items(selected, opts.uninstall))?;
-        if chosen.is_empty() {
-            writeln!(writer, "no harnesses selected; nothing to do")?;
-            return Ok(Proceed::No);
-        }
-        *selected = reconcile(chosen, selected);
-        return Ok(Proceed::Yes);
-    }
-    write!(writer, "  Proceed? [Y/n] ")?;
-    writer.flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(if parse_confirm(&line) {
+    Ok(if select::confirm(reader, writer, default_yes)? {
         Proceed::Yes
     } else {
         Proceed::No
@@ -358,11 +384,6 @@ fn select_harness_names(requested: &[String], uninstalling: bool) -> Result<Vec<
     Ok(out)
 }
 
-fn parse_confirm(line: &str) -> bool {
-    let a = line.trim().to_lowercase();
-    a.is_empty() || a == "y" || a == "yes"
-}
-
 /// Pure formatter for a per-harness outcome line (or lines, for dry-run).
 fn format_outcome(
     harness: &str,
@@ -433,18 +454,17 @@ fn run_skill_step(
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_confirm_defaults_yes_on_empty() {
-        assert!(parse_confirm(""));
-        assert!(parse_confirm("\n"));
-        assert!(parse_confirm("y"));
-        assert!(parse_confirm("YES"));
-    }
-    #[test]
-    fn parse_confirm_no() {
-        assert!(!parse_confirm("n"));
-        assert!(!parse_confirm("no"));
-        assert!(!parse_confirm("x"));
+    fn options() -> Options {
+        Options {
+            harnesses: vec![],
+            global: false,
+            yes: false,
+            no_hook: false,
+            hook_only: false,
+            uninstall: false,
+            dry_run: false,
+            git_hook: false,
+        }
     }
 
     #[test]
@@ -499,54 +519,60 @@ mod tests {
     }
 
     #[test]
-    fn build_items_detected_are_selected() {
-        let selected = vec![
-            ("claude-code".to_string(), Source::Detected),
-            ("codex".to_string(), Source::Detected),
-        ];
-        let items = build_items(&selected, false);
-        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["pi"]);
-        assert!(!items[0].detected && !items[0].selected, "pi");
+    fn detected_selection_defaults_yes_without_changing_its_source() {
+        let mut selected = vec![("pi".to_string(), Source::Detected)];
+        assert!(prepare_selection(&mut selected, &options(), true));
+        assert_eq!(selected.len(), 1);
+        assert!(matches!(selected[0].1, Source::Detected));
     }
 
     #[test]
-    fn build_items_none_detected_yields_pi_unchecked() {
-        let items = build_items(&[], false);
-        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["pi"]);
-        for item in &items {
-            assert!(
-                !item.detected && !item.selected,
-                "{} should be undetected and unchecked",
-                item.name
-            );
+    fn undetected_interactive_pi_is_previewed_with_a_no_default() {
+        let mut selected = vec![];
+        assert!(!prepare_selection(&mut selected, &options(), true));
+        assert_eq!(selected[0].0, "pi");
+        assert!(matches!(selected[0].1, Source::Requested));
+    }
+
+    #[test]
+    fn no_candidate_is_added_without_interactive_choice_or_during_uninstall() {
+        for (interactive, yes, uninstall) in [
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            let mut opts = options();
+            opts.yes = yes;
+            opts.uninstall = uninstall;
+            let mut selected = vec![];
+            assert!(prepare_selection(&mut selected, &opts, interactive));
+            assert!(selected.is_empty());
         }
     }
 
     #[test]
-    fn build_items_for_uninstall_includes_cleanup_only_harnesses() {
-        let selected = vec![("codex".to_string(), Source::Detected)];
-        let items = build_items(&selected, true);
-        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
-        let codex = items.iter().find(|item| item.name == "codex").unwrap();
-        assert!(codex.detected && codex.selected);
-    }
-
-    #[test]
-    fn reconcile_preserves_detected() {
-        let selected = vec![
-            ("claude-code".to_string(), Source::Detected),
-            ("codex".to_string(), Source::Detected),
-        ];
-        let chosen = vec!["claude-code".to_string(), "pi".to_string()];
-        let result = reconcile(chosen, &selected);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].0, "claude-code");
-        assert!(matches!(result[0].1, Source::Detected));
-        assert_eq!(result[1].0, "pi");
-        assert!(matches!(result[1].1, Source::Requested));
+    fn interactive_gate_uses_the_printed_selection_default() {
+        let opts = options();
+        for (default, answer, expected) in [
+            (true, "\n", Proceed::Yes),
+            (false, "\n", Proceed::No),
+            (false, "yes\n", Proceed::Yes),
+            (true, "no\n", Proceed::No),
+            (true, "", Proceed::No),
+        ] {
+            assert_eq!(
+                confirm_gate_to(
+                    &opts,
+                    &[],
+                    true,
+                    default,
+                    &mut std::io::Cursor::new(answer),
+                    &mut Vec::new()
+                )
+                .unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -561,11 +587,19 @@ mod tests {
             dry_run: false,
             git_hook: false,
         };
-        let mut selected = vec![("claude-code".to_string(), Source::Detected)];
+        let selected = vec![("claude-code".to_string(), Source::Detected)];
         let mut buf: Vec<u8> = Vec::new();
         let before = selected.clone();
         assert_eq!(
-            confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(),
+            confirm_gate_to(
+                &opts,
+                &selected,
+                true,
+                true,
+                &mut std::io::empty(),
+                &mut buf
+            )
+            .unwrap(),
             Proceed::Yes
         );
         assert_eq!(selected.len(), before.len());
@@ -590,10 +624,18 @@ mod tests {
             dry_run: false,
             git_hook: false,
         };
-        let mut selected = vec![("claude-code".to_string(), Source::Detected)];
+        let selected = vec![("claude-code".to_string(), Source::Detected)];
         let mut buf: Vec<u8> = Vec::new();
         assert_eq!(
-            confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(),
+            confirm_gate_to(
+                &opts,
+                &selected,
+                false,
+                true,
+                &mut std::io::empty(),
+                &mut buf
+            )
+            .unwrap(),
             Proceed::No
         );
         let out = String::from_utf8(buf).unwrap();
@@ -612,10 +654,18 @@ mod tests {
             dry_run: false,
             git_hook: false,
         };
-        let mut selected = vec![("codex".to_string(), Source::Requested)];
+        let selected = vec![("codex".to_string(), Source::Requested)];
         let mut buf: Vec<u8> = Vec::new();
         assert_eq!(
-            confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(),
+            confirm_gate_to(
+                &opts,
+                &selected,
+                false,
+                true,
+                &mut std::io::empty(),
+                &mut buf
+            )
+            .unwrap(),
             Proceed::Yes
         );
     }

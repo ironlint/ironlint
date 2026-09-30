@@ -58,6 +58,16 @@ pass; ordinary `init` does not change Git hooks. Uninstall removes owned files
 and registrations while preserving edited or unrelated user content. See
 [AI-tool integrations](../adapters/README.md).
 
+Interactive setup prints the plan and uses a plain line confirmation. Detected
+Pi is the default; undetected Pi requires an affirmative answer. EOF declines.
+`--yes` confirms, explicit noninteractive `--harness` selects the requested
+integration, and `--dry-run` previews without input or writes. Interactive
+automatic uninstall confirms owned registrations: Pi in the requested scope
+(project by default, `--global` for global), legacy adapters in both scopes.
+Automatic noninteractive setup with detected Pi needs `--yes` or explicit
+`--harness pi`; without either it prints a rerun hint. Installing undetected Pi
+noninteractively requires explicit `--harness pi`.
+
 The managed hook exits immediately on an IronLint failure. After a successful
 acceptance check, any user-owned commands after the managed block still run.
 Explicit installation activates an existing hook by adding owner execute

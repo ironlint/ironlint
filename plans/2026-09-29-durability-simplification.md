@@ -4,14 +4,13 @@
 
 - **Authorization:** the user requested implementation of this plan with
   sub-agents, including the per-check timeout follow-up.
-- **Status:** implementation in progress; baseline established and D1 regressions
-  observed failing. Packets are implemented and reviewed in dependency order.
-- **Next packet:** D7 and D8, then separate batch-C review. Batch B is implemented
-  and independently reviewed; its empty-selection deadline finding is fixed and
-  rechecked. Full Rust tests pass: 504 tests across 28 suites, with Clippy and formatting.
-  Batch A is implemented and independently
-  reviewed; both review findings were fixed with failing regressions and rechecked.
-  Integrated Rust tests pass: 463 tests across 25 suites. Coverage remains a final gate.
+- **Status:** D1–D8 are implemented and independently reviewed. All review
+  findings are fixed with failing regressions and independently rechecked.
+- **Next packet:** D9 integrated verification, graph refresh, cleanup, and final
+  evidence. Batch C passes 516 Rust tests across 30 suites, 37 Pi tests,
+  TypeScript checking, strict all-target Clippy, and formatting. The Docker
+  feature suite passes. Coverage, MSRV, Windows compilation, and the repaired
+  Docker onboarding fixture remain final gates.
 - **Baseline:** the completed [v1 release plan](2026-09-05-ironlint-v1-implementation.md)
   records verification of `4828bfcd1811a1ef51c728bb32b977005d952713`.
   The review observed HEAD `e23b18c0e7e629b5a339d4391ef8cec696bed0ae`, a subsequent
@@ -81,9 +80,9 @@ renew consent. Runtime safety constants stay in code and are tested.
 | D4 | Share policy model and separate consent from evaluation | D3 | B | Complete |
 | D5 | Carry absolute deadlines and stream script verification | D4 | B | Complete |
 | D6 | Add per-check timeout override | D5 | B | Complete |
-| D7 | Bound and cancel Pi subprocess runs | D6 | C | In progress |
-| D8 | Replace the installation TUI with plain confirmation | D3 | C | In progress |
-| D9 | Verify the integrated tree and update evidence | D7, D8 | Final | Planned |
+| D7 | Bound and cancel Pi subprocess runs | D6 | C | Complete |
+| D8 | Replace the installation TUI with plain confirmation | D3 | C | Complete |
+| D9 | Verify the integrated tree and update evidence | D7, D8 | Final | In progress |
 
 The ordering stabilizes user-visible failures before moving shared abstractions.
 After batches A, B, and C, request a separate agent review scoped to the changed
@@ -372,11 +371,21 @@ completion path, destroys capture streams, clears timers/listeners, and reports
 cleanup failure when direct-child closure was not observed. Do not claim full
 process isolation or Windows descendant guarantees beyond the supported scope.
 
+Independent review reproduced a running check surviving evaluator termination:
+the core intentionally gives each check its own process group. Add an opt-in
+stdin-close cancellation channel at the CLI boundary and an explicit core
+cancellation token. Pi requests cooperative cleanup first; the evaluator kills
+and reaps its active check using the existing command cleanup, without starting
+another check. Retain the bounded forced-stop fallback. Checks still receive
+closed stdin, and existing evaluator entry points retain their behavior. Test
+this interaction with the real CLI, not only a same-group fake evaluator.
+
 **Regressions:** hung evaluator; sustained noisy stdout/stderr; split UTF-8
 chunks; oversized otherwise valid JSON; missing binary; malformed JSON; child
 error/close/timeout races; close callback absent; cancellation during output;
 older failure followed by newer success; policy deletion; no surviving direct
-child or timer after ordinary cancellation. Preserve the provenance fixtures.
+child, ordinary check group, or timer after ordinary cancellation. Preserve the
+provenance fixtures.
 
 If Pi never delivers a `tool_result`, feedback cannot be produced: document that
 boundary and retain full acceptance independently. Fixture tests prove callback
@@ -395,8 +404,9 @@ Replace raw-terminal multiselect with an ordinary line-based confirmation over
 the printed plan. A detected Pi adapter is the default selection; an undetected
 Pi installation requires an affirmative choice. Explicit `--harness`, `--yes`,
 noninteractive behavior, `--dry-run`, and optional `--git-hook` retain their
-documented authorization meanings. Interactive uninstall lists detected owned
-local/global registrations and confirms their cleanup; explicit `--harness all`
+documented authorization meanings. Interactive uninstall lists owned Pi
+registrations in the requested scope and owned legacy registrations in both
+local/global scopes, then confirms their cleanup; explicit `--harness all`
 continues to select legacy cleanup.
 
 Remove the terminal renderer/reducer/guard and dependencies with no retained
@@ -639,6 +649,6 @@ Required edits: NONE; the protections above are already included in the packets.
 | --- | --- | --- | --- | --- | --- |
 | D0 | `e23b18c` plus planning/user hook changes | Failed downloader and partial download regressions return false success on unchanged updater | `cargo test --locked`: 397 passed, 24 suites (Rust 1.96.1) | n/a | Complete |
 | A: D1–D3 | `c677ce0` | Masked shell failures; file collision/mode/ownership/symlink defects; all 13 diagnostic cases; partial first-backup publication; writable updater handle and inactive Git-hook regressions | Integrated: 463 tests / 25 suites. Focused fixes: 22 updater unit, 18 diagnostic/update integration, 12 filesystem, 14 Git unit, 8 Git integration. All-target Clippy and format clean | Separate agent found updater write-access and inactive-hook defects; both fixed and rechecked closed | Complete |
-| B: D4–D6 | Tested tree after `c677ce0`; local commit follows | D4: supplied bytes A incorrectly approved live bytes B through inherited worktree consent. D5: expired verification still launches a command; expired final verification reports pass; continuous drain ignores cancellation; empty selection bypasses expiry. D6: unsupported field/inspection; shorter/longer overrides ignored by global-only runner | Integrated: 504 Rust tests / 28 suites (15.81s), then all-target Clippy and format clean, strictly serial. Core timeout 8, runner 9, focused CLI 175 / 6 suites. Shipped skill validation passes; schema example parses | Independent PASS; empty-selection finding fixed and rechecked, no open findings | Complete |
-| C: D7–D8 | Pending | Pending | Pending | Pending | Planned |
-| D9 | Pending | n/a | Required gates pending | Prior findings must be closed | Planned |
+| B: D4–D6 | `33f417a` | D4: supplied bytes A incorrectly approved live bytes B through inherited worktree consent. D5: expired verification still launches a command; expired final verification reports pass; continuous drain ignores cancellation; empty selection bypasses expiry. D6: unsupported field/inspection; shorter/longer overrides ignored by global-only runner | Integrated: 504 Rust tests / 28 suites (15.81s), then all-target Clippy and format clean, strictly serial. Core timeout 8, runner 9, focused CLI 175 / 6 suites. Shipped skill validation passes; schema example parses | Independent PASS; empty-selection finding fixed and rechecked, no open findings | Complete |
+| C: D7–D8 | Tested working tree after `33f417a`; local commit below | D7: overflow/hang leaves child running, stderr unbounded, newer mutation does not cancel, malformed exit-zero output suppressed; real CLI check survives evaluator cancellation; invalid UTF-8 repaired into false success. D8: PTY EOF authorizes installation; automatic cleanup treats an unowned harness directory as installed | Integrated: 516 Rust tests / 30 suites (16.36s), 37 Pi tests, typecheck, strict Clippy/fmt. Focused setup: 44 unit, 11 onboarding, 7 PTY, 10 scaffold, 3 dry-run, 8 Git. Controlled Rust 1.96.1/aarch64 release: 2,842,608 → 2,518,432 bytes (11.4% smaller); external normal dependencies 103 → 59; locked packages 266 → 145, no added or changed versions. Pi/skill pinned to B in both builds | Independent PASS; real cancellation and strict UTF-8 findings fixed and rechecked, setup 29 independent tests; no open findings | Complete |
+| D9 | Working tree after batch C | Onboarding image lacks Git required by new optional-hook inspection | Docker feature suite and shell verifier tests pass; remaining gates running | Harness changes independently reviewed; onboarding runtime dependency fix under review | In progress |

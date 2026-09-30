@@ -6,6 +6,7 @@ use crate::trust::ApprovedPolicy;
 use crate::verdict::{V1CheckOutcome, V1CheckResult, V1NotRun, V1Verdict};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Evaluate one approved v1 policy against the supplied tree.
@@ -40,6 +41,44 @@ pub fn evaluate_v1_snapshot(
     event: V1Event,
     changed_paths: Option<&[PathBuf]>,
 ) -> Result<V1Verdict> {
+    evaluate_v1_snapshot_cancellable(
+        snapshot,
+        root,
+        event,
+        changed_paths,
+        &AtomicBool::new(false),
+    )
+}
+
+/// Evaluate approved bytes with an explicit caller-owned cancellation flag.
+///
+/// Cancellation stops the active command and its supported process group;
+/// completed results remain visible and unstarted checks are `not_run`.
+pub fn evaluate_v1_cancellable(
+    approved: &ApprovedPolicy,
+    root: &Path,
+    event: &str,
+    changed_paths: Option<&[PathBuf]>,
+    cancellation: &AtomicBool,
+) -> Result<V1Verdict> {
+    evaluate_v1_snapshot_cancellable(
+        approved.snapshot(),
+        root,
+        V1Event::parse(event)?,
+        changed_paths,
+        cancellation,
+    )
+}
+
+/// Evaluate a neutral snapshot with explicit cooperative cancellation.
+/// The caller owns and sets the flag; core installs no ambient signal handler.
+pub fn evaluate_v1_snapshot_cancellable(
+    snapshot: &PolicySnapshot,
+    root: &Path,
+    event: V1Event,
+    changed_paths: Option<&[PathBuf]>,
+    cancellation: &AtomicBool,
+) -> Result<V1Verdict> {
     evaluate_with(
         snapshot,
         root,
@@ -47,6 +86,7 @@ pub fn evaluate_v1_snapshot(
         changed_paths,
         &Instant::now,
         &|snapshot, deadline| snapshot.verify_unchanged_until(deadline),
+        cancellation,
     )
 }
 
@@ -57,6 +97,7 @@ fn evaluate_with(
     changed_paths: Option<&[PathBuf]>,
     now: &dyn Fn() -> Instant,
     verify: &dyn Fn(&PolicySnapshot, Option<Instant>) -> Result<()>,
+    cancellation: &AtomicBool,
 ) -> Result<V1Verdict> {
     let config = snapshot.policy();
     let event_name = event.as_str();
@@ -78,11 +119,20 @@ fn evaluate_with(
             Some("total_timeout".into()),
         ));
     };
+    if cancellation.load(Ordering::Relaxed) {
+        mark_not_run(&mut not_run, &selected, "execution_cancelled");
+        return Ok(V1Verdict::from_results(
+            event_name,
+            results,
+            not_run,
+            Some("execution_cancelled".into()),
+        ));
+    }
     let bin = ironlint_bin();
 
     for (index, id) in selected.iter().enumerate() {
         let check = &config.checks()[*id];
-        if let Err(drift) = verify_current(snapshot, total_deadline, now, verify) {
+        if let Err(drift) = verify_current(snapshot, total_deadline, now, verify, cancellation) {
             let (reason, detail) = verification_failure(&drift);
             mark_not_run(&mut not_run, &selected[index..], reason);
             error = Some(detail);
@@ -97,11 +147,11 @@ fn evaluate_with(
             },
             Duration::from_secs(check.effective_timeout_secs(config.execution())),
             total_deadline,
+            cancellation,
         );
-        if execution.outcome == V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn)
-        {
-            mark_not_run(&mut not_run, &selected[index..], "total_timeout");
-            error = Some("total_timeout".into());
+        if let Some(reason) = unstarted_reason(&execution.outcome) {
+            mark_not_run(&mut not_run, &selected[index..], reason);
+            error = Some(reason.into());
             break;
         }
         let failed = !matches!(
@@ -119,17 +169,27 @@ fn evaluate_with(
                 mark_not_run(&mut not_run, &selected[index + 1..], "total_timeout");
                 error = Some("total_timeout".to_string());
             } else {
-                mark_not_run(&mut not_run, &selected[index + 1..], "execution_error");
+                let reason = if execution_was_cancelled(results.last()) {
+                    "execution_cancelled"
+                } else {
+                    "execution_error"
+                };
+                mark_not_run(&mut not_run, &selected[index + 1..], reason);
                 error = results.last().and_then(|result| result.reason.clone());
             }
             break;
         }
     }
 
-    if error.is_none() && !selected.is_empty() {
+    if error.is_none() {
         // Post-run: a check that edited the approved policy or scripts (or a
         // concurrent writer doing so) must never yield a clean `pass`.
-        if let Err(drift) = verify_current(snapshot, total_deadline, now, verify) {
+        let verified = if selected.is_empty() {
+            check_cancellation(cancellation)
+        } else {
+            verify_current(snapshot, total_deadline, now, verify, cancellation)
+        };
+        if let Err(drift) = verified {
             error = Some(verification_failure(&drift).1);
         }
     }
@@ -137,20 +197,53 @@ fn evaluate_with(
     Ok(V1Verdict::from_results(event_name, results, not_run, error))
 }
 
+fn unstarted_reason(outcome: &V1ExecutionOutcome) -> Option<&'static str> {
+    match outcome {
+        V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn) => {
+            Some("total_timeout")
+        }
+        V1ExecutionOutcome::Error(V1ExecutionError::CancelledBeforeSpawn) => {
+            Some("execution_cancelled")
+        }
+        _ => None,
+    }
+}
+
+fn execution_was_cancelled(result: Option<&V1CheckResult>) -> bool {
+    result.is_some_and(|result| result.reason.as_deref() == Some("execution_cancelled"))
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("execution_cancelled")]
+struct ExecutionCancelled;
+
+fn check_cancellation(cancellation: &AtomicBool) -> Result<()> {
+    if cancellation.load(Ordering::Relaxed) {
+        Err(ExecutionCancelled.into())
+    } else {
+        Ok(())
+    }
+}
+
 fn verify_current(
     snapshot: &PolicySnapshot,
     until: Instant,
     now: &dyn Fn() -> Instant,
     verify: &dyn Fn(&PolicySnapshot, Option<Instant>) -> Result<()>,
+    cancellation: &AtomicBool,
 ) -> Result<()> {
+    check_cancellation(cancellation)?;
     deadline::check_at(Some(until), now())?;
     verify(snapshot, Some(until))?;
+    check_cancellation(cancellation)?;
     deadline::check_at(Some(until), now())
 }
 
 fn verification_failure(error: &anyhow::Error) -> (&'static str, String) {
     if error.is::<TotalTimeout>() {
         ("total_timeout", "total_timeout".into())
+    } else if error.is::<ExecutionCancelled>() {
+        ("execution_cancelled", "execution_cancelled".into())
     } else {
         ("policy_changed", format!("{error:#}"))
     }
@@ -188,6 +281,9 @@ fn execution_error_reason(error: &V1ExecutionError) -> String {
         V1ExecutionError::Timeout => "timeout".to_string(),
         V1ExecutionError::DeadlineOverflow => "deadline_overflow".to_string(),
         V1ExecutionError::TotalTimeoutBeforeSpawn => "total_timeout".to_string(),
+        V1ExecutionError::Cancelled | V1ExecutionError::CancelledBeforeSpawn => {
+            "execution_cancelled".to_string()
+        }
         V1ExecutionError::Signal(_) => "signal".to_string(),
         V1ExecutionError::HighExit(_) => "high_exit".to_string(),
         V1ExecutionError::Spawn(_) => "spawn".to_string(),
@@ -204,6 +300,111 @@ fn mark_not_run(not_run: &mut Vec<V1NotRun>, ids: &[&str], reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cancellation_snapshot(dir: &Path) -> PolicySnapshot {
+        let policy = dir.join("policy.yml");
+        std::fs::write(&policy, "version: 1\nchecks:\n  a: {on: [change, accept], files: '*.rs', run: 'touch marker'}\n").unwrap();
+        PolicySnapshot::load(&policy).unwrap()
+    }
+
+    #[test]
+    fn d7_cancelled_selection_never_passes_or_starts_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = cancellation_snapshot(dir.path());
+        for paths in [None, Some(vec![PathBuf::from("README.md")])] {
+            let verdict = evaluate_v1_snapshot_cancellable(
+                &snapshot,
+                dir.path(),
+                V1Event::Change,
+                paths.as_deref(),
+                &AtomicBool::new(true),
+            )
+            .unwrap();
+            assert_eq!(verdict.error.as_deref(), Some("execution_cancelled"));
+            assert!(verdict.results.is_empty());
+            assert_eq!(verdict.not_run.len(), usize::from(paths.is_none()));
+            assert!(verdict
+                .not_run
+                .iter()
+                .all(|n| n.reason == "execution_cancelled"));
+            assert!(!dir.path().join("marker").exists());
+        }
+    }
+
+    #[test]
+    fn d7_cancellation_during_preflight_never_starts_a_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = cancellation_snapshot(dir.path());
+        let flag = AtomicBool::new(false);
+        let verdict = evaluate_with(
+            &snapshot,
+            dir.path(),
+            V1Event::Accept,
+            None,
+            &Instant::now,
+            &|_, _| {
+                flag.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(verdict.error.as_deref(), Some("execution_cancelled"));
+        assert_eq!(verdict.not_run[0].reason, "execution_cancelled");
+        assert!(verdict.results.is_empty());
+        assert!(!dir.path().join("marker").exists());
+    }
+
+    #[test]
+    fn d7_cancellation_during_final_verification_preserves_completed_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = cancellation_snapshot(dir.path());
+        let flag = AtomicBool::new(false);
+        let calls = std::cell::Cell::new(0);
+        let verdict = evaluate_with(
+            &snapshot,
+            dir.path(),
+            V1Event::Accept,
+            None,
+            &Instant::now,
+            &|_, _| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            },
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(verdict.error.as_deref(), Some("execution_cancelled"));
+        assert_eq!(verdict.results[0].outcome, V1CheckOutcome::Pass);
+        assert!(verdict.not_run.is_empty());
+    }
+
+    #[test]
+    fn d7_cancellation_during_empty_selection_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = cancellation_snapshot(dir.path());
+        let flag = AtomicBool::new(false);
+        let now = || {
+            flag.store(true, Ordering::Relaxed);
+            Instant::now()
+        };
+        let verdict = evaluate_with(
+            &snapshot,
+            dir.path(),
+            V1Event::Change,
+            Some(&[PathBuf::from("README.md")]),
+            &now,
+            &|_, _| panic!("no selected checks"),
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(verdict.error.as_deref(), Some("execution_cancelled"));
+        assert!(verdict.results.is_empty());
+        assert!(verdict.not_run.is_empty());
+    }
 
     #[test]
     fn d5_empty_selection_consuming_budget_is_total_timeout() {
@@ -231,6 +432,7 @@ mod tests {
             Some(&[PathBuf::from("README.md")]),
             &now,
             &|_, _| panic!("empty selection must not verify or execute a check"),
+            &AtomicBool::new(false),
         )
         .unwrap();
         assert_eq!(verdict.status, crate::verdict::V1Status::Error);
@@ -264,6 +466,7 @@ mod tests {
             None,
             &|| clock.get(),
             &verify,
+            &AtomicBool::new(false),
         )
         .unwrap();
         assert!(!dir.path().join("marker").exists());
@@ -303,6 +506,7 @@ mod tests {
             None,
             &|| clock.get(),
             &verify,
+            &AtomicBool::new(false),
         )
         .unwrap();
         assert_eq!(verdict.error.as_deref(), Some("total_timeout"));

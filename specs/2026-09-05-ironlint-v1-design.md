@@ -259,6 +259,11 @@ their location in the candidate is not itself evidence of approval.
 - Continue after an ordinary check failure to gather other diagnostics while
   budget remains. Stop on execution failure or exhausted budget and report
   remaining selected checks as not run.
+- Explicit cooperative cancellation stops the active command through the same
+  bounded cleanup and prevents subsequent commands. It produces an
+  `execution_cancelled` error, retaining completed results and distinguishing
+  interrupted from unstarted checks. This optional evaluator capability does
+  not change command stdin or the existing evaluation entry points.
 
 Acceptance commands must inspect the candidate, not silently repair source.
 Build artifacts in designated scratch locations are permitted. The core is

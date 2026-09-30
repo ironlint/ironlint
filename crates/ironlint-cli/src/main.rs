@@ -42,7 +42,15 @@ fn main() -> Result<()> {
             config,
             event,
             root,
-        } => commands::check::run(file, format, &config, event.as_deref(), root.as_deref())?,
+            cancel_on_stdin_close,
+        } => commands::check::run(
+            file,
+            format,
+            &config,
+            event.as_deref(),
+            root.as_deref(),
+            cancel_on_stdin_close,
+        )?,
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config, format } => commands::validate::run(&config, format)?,
         Command::Init {

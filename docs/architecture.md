@@ -75,6 +75,13 @@ expired final verification returns an error even if every command passed.
 Filesystem deadline checks are cooperative, and process cleanup has a bounded
 grace period.
 
+The additive `evaluate_v1_cancellable` and `evaluate_v1_snapshot_cancellable`
+entry points accept an explicit `AtomicBool` cancellation flag. Cancellation
+prevents further commands, stops and reaps the active command, and produces an
+`execution_cancelled` error. Existing entry points use an unset flag. Pi uses
+an opt-in CLI stdin-close channel to request this cleanup before its bounded
+forced-stop fallback; command stdin remains closed.
+
 ## Installation writes
 
 Owned replacements use an exclusively created sibling temporary file, complete

@@ -32,6 +32,9 @@ pub enum Command {
         /// resolve under this directory.
         #[arg(long)]
         root: Option<PathBuf>,
+        /// Internal adapter capability: stop checks when the parent closes stdin.
+        #[arg(long, hide = true)]
+        cancel_on_stdin_close: bool,
     },
     /// Bless this config + its `.ironlint/scripts/` scripts in the out-of-repo trust store.
     Trust {

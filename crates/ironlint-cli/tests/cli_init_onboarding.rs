@@ -30,6 +30,46 @@ fn explicit_pi_install_writes_plugin_and_skill() {
 }
 
 #[test]
+fn automatic_nonterminal_install_requires_detection_and_yes() {
+    for (detected, yes, installed) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        let (_tmp, home, project) = workspace();
+        if detected {
+            std::fs::create_dir_all(home.join(".pi")).unwrap();
+        }
+        let mut command = ironlint(&home, &project);
+        command.args(["init", "--hook-only"]);
+        if yes {
+            command.arg("--yes");
+        }
+        command.assert().success();
+        assert_eq!(
+            project.join(".pi/extensions/ironlint.ts").exists(),
+            installed
+        );
+    }
+}
+
+#[test]
+fn automatic_uninstall_finds_owned_skill_after_plugin_is_missing() {
+    let (_tmp, home, project) = workspace();
+    ironlint(&home, &project)
+        .args(["init", "--hook-only", "--harness", "pi", "--yes"])
+        .assert()
+        .success();
+    std::fs::remove_dir_all(project.join(".pi/extensions")).unwrap();
+    ironlint(&home, &project)
+        .args(["init", "--uninstall", "--yes"])
+        .assert()
+        .success();
+    assert!(!project.join(".pi/skills/ironlint-config/SKILL.md").exists());
+}
+
+#[test]
 fn pi_reinstall_reports_already_present() {
     let (_tmp, home, project) = workspace();
     for _ in 0..2 {

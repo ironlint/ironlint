@@ -6,6 +6,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod cancellation;
+
 pub(crate) const POSIX_SHELL: &str = "sh";
 
 pub(crate) fn shell_available(command: &str) -> bool {
@@ -25,8 +27,20 @@ pub fn run(
     config: &Path,
     event: Option<&str>,
     root: Option<&Path>,
+    cancel_on_stdin_close: bool,
 ) -> Result<i32> {
     let event = event.unwrap_or("accept");
+    let cancellation = match cancellation::from_stdin(cancel_on_stdin_close) {
+        Ok(flag) => flag,
+        Err(error) => {
+            return Ok(emit_v1_error(
+                format,
+                event,
+                &format!("parent cancellation watcher: {error}"),
+                3,
+            ))
+        }
+    };
     let config = match crate::commands::config::resolve_config(config) {
         Ok(path) => path,
         Err(reason) => return Ok(emit_v1_error(format, event, &reason, 1)),
@@ -65,11 +79,16 @@ pub fn run(
             return Ok(emit_v1_error(format, event, &format!("{error:#}"), 1));
         }
     };
-    let verdict =
-        match ironlint_core::runner::evaluate_v1(&approved, &root, event, changed.as_deref()) {
-            Ok(verdict) => verdict,
-            Err(error) => return Ok(emit_v1_error(format, event, &format!("{error:#}"), 1)),
-        };
+    let verdict = match ironlint_core::runner::evaluate_v1_cancellable(
+        &approved,
+        &root,
+        event,
+        changed.as_deref(),
+        &cancellation,
+    ) {
+        Ok(verdict) => verdict,
+        Err(error) => return Ok(emit_v1_error(format, event, &format!("{error:#}"), 1)),
+    };
     emit_v1(&verdict, format)?;
     Ok(match verdict.status {
         V1Status::Pass | V1Status::NotRun => 0,

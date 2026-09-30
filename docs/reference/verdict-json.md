@@ -48,6 +48,10 @@ finish, the completed results remain and `not_run` is empty, but the aggregate
 is `error`. A per-check command timeout remains an execution error. Optional
 check timeout overrides do not change schema 7.
 
+An explicitly canceled evaluation uses `execution_cancelled`. It retains
+completed results, reports the interrupted command as an error, and marks
+unstarted selected checks `not_run`; cancellation cannot produce a pass.
+
 | CLI exit | Meaning |
 | --- | --- |
 | 0 | Evaluation completed, including empty `change` selection. |

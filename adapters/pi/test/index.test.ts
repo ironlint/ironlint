@@ -53,6 +53,7 @@ function project(): string {
 const violation = JSON.stringify({
   results: [{ id: "no-panic", outcome: "violation", reason: "panic found" }],
 })
+const emptyChange = JSON.stringify({ schema: 7, event: "change", status: "not_run", results: [], not_run: [], error: null })
 
 test("changedPaths includes delete paths and both rename endpoints", () => {
   assert.deepEqual(changedPaths("delete", { path: "src/dead.rs" }), ["src/dead.rs"])
@@ -142,7 +143,7 @@ test("tool_result reports evaluator failures without vetoing a later edit", asyn
 })
 
 test("tool_result suppresses successful feedback and ignores failed writes", async () => {
-  fakeIronLint(0)
+  fakeIronLint(0, emptyChange)
   const root = project()
   try {
     const handlers = loadExtension(root)
@@ -172,22 +173,22 @@ test("tool_result skips a known-empty batch", async () => {
   }
 })
 
-test("tool_result labels feedback superseded when a newer edit arrives", async () => {
+test("tool_result cancels pending feedback when a newer edit arrives", async () => {
   fakeIronLint(2, violation, "", "sleep 0.1")
   const root = project()
   try {
     const handler = loadExtension(root).tool_result!
     const first = handler({ toolName: "write", input: { path: "src/first.rs" }, content: [], isError: false })
     const second = handler({ toolName: "write", input: { path: "src/second.rs" }, content: [], isError: false })
-    const firstResult = (await first) as { content?: Array<{ text?: string }> }
+    const firstResult = await first
     await second
-    assert.match(firstResult.content?.at(-1)?.text ?? "", /superseded by a newer edit/)
+    assert.equal(firstResult, undefined)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
 
-test("tool_result supersedes pending feedback when a newer mutation deletes the policy", async () => {
+test("tool_result cancels pending feedback when a newer mutation deletes the policy", async () => {
   fakeIronLint(2, violation, "", "sleep 0.1")
   const root = project()
   try {
@@ -196,8 +197,7 @@ test("tool_result supersedes pending feedback when a newer mutation deletes the 
     rmSync(join(root, ".ironlint.yml"))
     await handler({ toolName: "delete", input: { path: ".ironlint.yml" }, content: [], isError: false })
 
-    const firstResult = (await first) as { content?: Array<{ text?: string }> }
-    assert.match(firstResult.content?.at(-1)?.text ?? "", /superseded by a newer edit/)
+    assert.equal(await first, undefined)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
