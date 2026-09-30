@@ -1,6 +1,5 @@
-use crate::adapter::materialize::{
-    atomic_write, backup_once, read_sidecar, sha256_hex, write_sidecar, AdapterSidecar,
-};
+use crate::adapter::materialize::{atomic_write, backup_once, read_sidecar, sha256_hex};
+use crate::adapter::ownership::{install_files, remove_owned_files};
 use crate::adapter::plan::PlanStep;
 use crate::adapter::registry::{JsonHookSpec, PluginSpec, SkillSpec};
 use crate::adapter::SKILL_NAME;
@@ -8,6 +7,7 @@ use crate::adapter::{
     adapters_dir, remove_from_hook_array, sync_hook_array, AdapterEnv, Harness, HarnessKind,
     PatchResult, Scope,
 };
+use crate::filesystem::ResourceLocks;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -35,6 +35,28 @@ pub struct HarnessStatus {
     pub registered: bool,
     pub intact: Option<bool>,
     pub current: Option<bool>,
+}
+
+/// Physical resources inspected for one adapter scope.
+///
+/// Local scopes may use a global fallback; consumers can distinguish a shared
+/// artifact from separate settings registrations using the registry's paths.
+pub struct StatusPaths {
+    pub artifact: PathBuf,
+    pub registration: Option<PathBuf>,
+}
+
+pub fn status_paths(h: &Harness, env: &AdapterEnv, scope: Scope) -> StatusPaths {
+    match &h.kind {
+        HarnessKind::JsonHook(spec) => StatusPaths {
+            artifact: adapters_dir(env).join(h.name).join(spec.primary),
+            registration: Some(settings_path(spec, env, scope)),
+        },
+        HarnessKind::Plugin(spec) => StatusPaths {
+            artifact: plugin_dir(spec, env, scope).join(spec.filename),
+            registration: None,
+        },
+    }
 }
 
 /// Read a JSON settings file, defaulting to `{}` when absent.
@@ -103,15 +125,15 @@ fn install_jsonhook(
     let command = format!("\"{}\" {}", primary_path.display(), spec.entry_arg);
     let marker = format!("{}", dir.display());
     let settings = settings_path(spec, env, scope);
-
-    let mut files = BTreeMap::new();
-    for (fname, bytes) in spec.files {
-        let p = dir.join(fname);
-        atomic_write(&p, bytes.as_bytes())?;
-        set_executable(&p)?;
-        files.insert((*fname).to_string(), sha256_hex(bytes.as_bytes()));
+    let _locks = ResourceLocks::acquire(&[&dir, &settings])?;
+    let sources: Vec<_> = spec
+        .files
+        .iter()
+        .map(|(name, bytes)| (*name, bytes.as_bytes()))
+        .collect();
+    if let skipped @ InstallResult::Skipped(_) = install_files(&dir, &sources, true)? {
+        return Ok(skipped);
     }
-    write_sidecar(&dir, &AdapterSidecar { files })?;
 
     let mut value = load_settings(&settings)?;
     let entry = (spec.build_entry)(&command);
@@ -127,25 +149,8 @@ fn install_jsonhook(
 
 fn install_plugin(spec: &PluginSpec, env: &AdapterEnv, scope: Scope) -> Result<InstallResult> {
     let dir = plugin_dir(spec, env, scope);
-    let file = dir.join(spec.filename);
-    let new_bytes = spec.source.as_bytes();
-    let existed = file.exists();
-    if existed {
-        if let Ok(cur) = std::fs::read(&file) {
-            if cur == new_bytes {
-                return Ok(InstallResult::AlreadyPresent);
-            }
-        }
-    }
-    atomic_write(&file, new_bytes)?;
-    let mut files = BTreeMap::new();
-    files.insert(spec.filename.to_string(), sha256_hex(new_bytes));
-    write_sidecar(&dir, &AdapterSidecar { files })?;
-    Ok(if existed {
-        InstallResult::Updated
-    } else {
-        InstallResult::Installed
-    })
+    let _locks = ResourceLocks::acquire(&[&dir])?;
+    install_files(&dir, &[(spec.filename, spec.source.as_bytes())], false)
 }
 
 fn skill_base(spec: &SkillSpec, env: &AdapterEnv, scope: Scope) -> PathBuf {
@@ -167,6 +172,7 @@ pub fn install_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<Inst
     }
     let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
     let file = dir.join("SKILL.md");
+    let _locks = ResourceLocks::acquire(&[&dir])?;
     let result = install_skill_file(&file, &dir, h.skill.source.as_bytes())?;
     Ok(InstallOutcome {
         harness: h.name,
@@ -176,27 +182,13 @@ pub fn install_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<Inst
 }
 
 fn install_skill_file(file: &Path, dir: &Path, bytes: &[u8]) -> Result<InstallResult> {
-    let existed = file.exists();
-    if existed {
-        if let Ok(cur) = std::fs::read(file) {
-            if cur == bytes {
-                return Ok(InstallResult::AlreadyPresent);
-            }
-        }
-    }
-    atomic_write(file, bytes)?;
-    let mut files = BTreeMap::new();
-    files.insert("SKILL.md".to_string(), sha256_hex(bytes));
-    write_sidecar(dir, &AdapterSidecar { files })?;
-    Ok(if existed {
-        InstallResult::Updated
-    } else {
-        InstallResult::Installed
-    })
+    debug_assert_eq!(file, dir.join("SKILL.md"));
+    install_files(dir, &[("SKILL.md", bytes)], false)
 }
 
 pub fn uninstall_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<InstallOutcome> {
     let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
+    let _locks = ResourceLocks::acquire(&[&dir])?;
     let result = remove_owned_files(&dir, &["SKILL.md"])?;
     Ok(InstallOutcome {
         harness: h.name,
@@ -258,19 +250,6 @@ pub fn plan_uninstall(h: &Harness, env: &AdapterEnv, scope: Scope) -> Vec<PlanSt
     steps
 }
 
-#[cfg(unix)]
-fn set_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)?;
-    Ok(())
-}
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
 // --- uninstall ---------------------------------------------------------------
 
 pub fn uninstall(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<InstallOutcome> {
@@ -293,6 +272,7 @@ fn uninstall_jsonhook(
 ) -> Result<InstallResult> {
     let dir = adapters_dir(env).join(name);
     let settings = settings_path(spec, env, scope);
+    let _locks = ResourceLocks::acquire(&[&dir, &settings])?;
     if settings.exists() {
         let mut value = load_settings(&settings)?;
         if remove_from_hook_array(&mut value, spec.array_key, &format!("{}", dir.display())) {
@@ -310,64 +290,8 @@ fn uninstall_plugin(
     scope: Scope,
 ) -> Result<InstallResult> {
     let dir = plugin_dir(spec, env, scope);
+    let _locks = ResourceLocks::acquire(&[&dir])?;
     remove_owned_files(&dir, &[spec.filename])
-}
-
-/// Remove only files recorded by the installer and left byte-for-byte intact.
-/// A changed file or unknown content stays on disk for manual review.
-fn remove_owned_files(dir: &Path, names: &[&str]) -> Result<InstallResult> {
-    let metadata = match std::fs::symlink_metadata(dir) {
-        Ok(metadata) => metadata,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(InstallResult::Installed);
-        }
-        Err(e) => return Err(e).with_context(|| format!("inspecting {}", dir.display())),
-    };
-    if !metadata.is_dir() {
-        return Ok(InstallResult::Skipped(format!(
-            "preserved non-directory {}; review and remove manually",
-            dir.display()
-        )));
-    }
-    let Some(sidecar) = read_sidecar(dir)? else {
-        return Ok(InstallResult::Skipped(format!(
-            "preserved {} without ownership record; review and remove manually",
-            dir.display()
-        )));
-    };
-    for name in names {
-        let file = dir.join(name);
-        let bytes = match std::fs::read(&file) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
-        };
-        if sidecar.files.get(*name) != Some(&sha256_hex(&bytes)) {
-            return Ok(InstallResult::Skipped(format!(
-                "preserved edited {}; review and remove manually",
-                file.display()
-            )));
-        }
-        std::fs::remove_file(&file)
-            .with_context(|| format!("removing owned {}", file.display()))?;
-    }
-    let record = crate::adapter::sidecar_path(dir);
-    match std::fs::remove_file(&record) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("removing {}", record.display())),
-    }
-    match std::fs::remove_dir(dir) {
-        Ok(()) => Ok(InstallResult::Installed),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(InstallResult::Installed),
-        Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-            Ok(InstallResult::Skipped(format!(
-                "preserved additional content in {}; review manually",
-                dir.display()
-            )))
-        }
-        Err(e) => Err(e).with_context(|| format!("removing {}", dir.display())),
-    }
 }
 
 // --- status ------------------------------------------------------------------
@@ -398,7 +322,7 @@ fn status_jsonhook(
     let dir = adapters_dir(env).join(name);
     let settings = settings_path(spec, env, scope);
     let registered = settings_has_marker(&settings, spec.array_key, &format!("{}", dir.display()))?;
-    let installed = dir.exists();
+    let installed = crate::filesystem::regular_file(&dir.join(spec.primary))?.is_some();
     let expected: BTreeMap<String, String> = spec
         .files
         .iter()
@@ -415,14 +339,16 @@ fn status_plugin(
 ) -> Result<(bool, bool, Option<bool>, Option<bool>)> {
     let dir = plugin_dir(spec, env, scope);
     let file = dir.join(spec.filename);
-    let installed = file.exists();
-    let registered = installed;
+    let installed = crate::filesystem::regular_file(&file)?.is_some();
     let mut expected = BTreeMap::new();
     expected.insert(
         spec.filename.to_string(),
         sha256_hex(spec.source.as_bytes()),
     );
     let (intact, current) = sidecar_integrity(&dir, &expected)?;
+    // A retained ownership record identifies a broken installation even when
+    // its auto-discovered primary file has been removed.
+    let registered = installed || intact.is_some();
     Ok((installed, registered, intact, current))
 }
 
@@ -439,15 +365,32 @@ fn sidecar_integrity(
     dir: &Path,
     expected: &BTreeMap<String, String>,
 ) -> Result<(Option<bool>, Option<bool>)> {
+    let pending = crate::adapter::pending_sidecar_path(dir);
+    if crate::filesystem::regular_file(&pending)?.is_some() {
+        anyhow::bail!(
+            "incomplete installation: pending adapter recovery at {}",
+            pending.display()
+        );
+    }
     match read_sidecar(dir)? {
         Some(sc) => {
-            let intact =
-                sc.files.iter().all(
-                    |(name, recorded_hash)| match std::fs::read(dir.join(name)) {
-                        Ok(bytes) => sha256_hex(&bytes) == *recorded_hash,
-                        Err(_) => false,
-                    },
-                );
+            let mut intact = true;
+            for (name, recorded_hash) in &sc.files {
+                if !expected.contains_key(name) {
+                    intact = false;
+                    continue;
+                }
+                let path = dir.join(name);
+                match std::fs::read(&path) {
+                    Ok(bytes) => intact &= sha256_hex(&bytes) == *recorded_hash,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => intact = false,
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("reading adapter artifact {}", path.display())
+                        })
+                    }
+                }
+            }
             Ok((Some(intact), Some(is_current(&sc.files, expected))))
         }
         None => Ok((None, None)),
@@ -462,9 +405,6 @@ fn is_current(recorded: &BTreeMap<String, String>, expected: &BTreeMap<String, S
 }
 
 fn settings_has_marker(path: &Path, key: &str, marker: &str) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
     let value = load_settings(path)?;
     Ok(value
         .get("hooks")
@@ -723,6 +663,33 @@ mod tests {
     }
 
     #[test]
+    fn d2_settings_edits_reread_under_the_same_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let settings = e.home.join("shared.json");
+        let guard = ResourceLocks::acquire(&[&settings]).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let child_barrier = barrier.clone();
+        let child_env = e.clone();
+        let thread = std::thread::spawn(move || {
+            let mut h = harness("codex");
+            let HarnessKind::JsonHook(spec) = &mut h.kind else {
+                panic!("JSON hook")
+            };
+            spec.settings_global = |env| env.home.join("shared.json");
+            child_barrier.wait();
+            install(&h, &child_env, Scope::Global).unwrap();
+        });
+        barrier.wait();
+        write_settings(&settings, &serde_json::json!({"firstIronLintEdit": true})).unwrap();
+        drop(guard);
+        thread.join().unwrap();
+        let value = load_settings(&settings).unwrap();
+        assert_eq!(value["firstIronLintEdit"], true);
+        assert!(value["hooks"]["PreToolUse"].is_array());
+    }
+
+    #[test]
     fn install_plugin_identical_content_is_already_present() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
@@ -735,13 +702,49 @@ mod tests {
     }
 
     #[test]
+    fn d2_install_preserves_identical_foreign_plugin_without_adopting_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("pi");
+        let HarnessKind::Plugin(spec) = &h.kind else {
+            panic!("Pi plugin")
+        };
+        let dir = plugin_dir(spec, &e, Scope::Local);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(spec.filename);
+        std::fs::write(&file, spec.source).unwrap();
+        let result = install(&h, &e, Scope::Local).unwrap();
+        assert!(
+            matches!(result.result, InstallResult::Skipped(_)),
+            "foreign content must stay foreign"
+        );
+        assert!(read_sidecar(&dir).unwrap().is_none());
+        assert_eq!(std::fs::read(&file).unwrap(), spec.source.as_bytes());
+    }
+
+    #[test]
+    fn d2_reinstall_preserves_edited_owned_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("pi");
+        install(&h, &e, Scope::Local).unwrap();
+        let file = e.project_root.join(".pi/extensions/ironlint.ts");
+        std::fs::write(&file, b"// user edit").unwrap();
+        let result = install(&h, &e, Scope::Local).unwrap();
+        assert!(matches!(result.result, InstallResult::Skipped(_)));
+        assert_eq!(std::fs::read(&file).unwrap(), b"// user edit");
+    }
+
+    #[test]
     fn install_plugin_changed_content_is_updated() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        install(&harness("opencode"), &e, Scope::Local).unwrap();
-        let file = e.project_root.join(".opencode/plugins/ironlint.ts");
-        std::fs::write(&file, b"// changed").unwrap();
-        let again = install(&harness("opencode"), &e, Scope::Local).unwrap();
+        let mut h = harness("opencode");
+        install(&h, &e, Scope::Local).unwrap();
+        if let HarnessKind::Plugin(spec) = &mut h.kind {
+            spec.source = "// upgraded";
+        }
+        let again = install(&h, &e, Scope::Local).unwrap();
         assert!(
             matches!(again.result, InstallResult::Updated),
             "changed content must return Updated"
@@ -828,10 +831,10 @@ mod tests {
     fn install_skill_changed_content_is_updated() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        install_skill(&harness("pi"), &e, Scope::Local).unwrap();
-        let f = e.project_root.join(".pi/skills/ironlint-config/SKILL.md");
-        std::fs::write(&f, b"// tampered").unwrap();
-        let again = install_skill(&harness("pi"), &e, Scope::Local).unwrap();
+        let mut h = harness("pi");
+        install_skill(&h, &e, Scope::Local).unwrap();
+        h.skill.source = "// upgraded skill";
+        let again = install_skill(&h, &e, Scope::Local).unwrap();
         assert!(matches!(again.result, InstallResult::Updated));
     }
 

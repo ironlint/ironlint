@@ -25,6 +25,7 @@ use std::path::PathBuf;
 
 mod adapters;
 mod config;
+mod git_hook;
 
 use adapters::adapter_section;
 use config::{
@@ -74,6 +75,9 @@ pub fn run(dir: &std::path::Path, format: OutputFormat) -> Result<i32> {
         trust_row(&ctx),
     ];
     checks.extend(adapter_section(dir));
+    if let Some(hook) = git_hook::check_git_hook(dir) {
+        checks.push(hook);
+    }
     let report = Report {
         ironlint_version: env!("CARGO_PKG_VERSION").to_string(),
         checks,

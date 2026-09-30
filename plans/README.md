@@ -1,8 +1,14 @@
 # Current work
 
-The [v1 implementation plan](2026-09-05-ironlint-v1-implementation.md) is the only
-active execution plan. It records the verified baseline, next task, dependencies,
-and evidence needed to finish the release.
+The [durability and simplification plan](2026-09-29-durability-simplification.md)
+is the active engineering plan. It covers the 2026-09-29 review findings and the
+per-check timeout extension, with ordered packets, regression requirements,
+compatibility decisions, and a pressure test. Implementation is in progress with
+sub-agents; the plan records current packet status and fresh verification.
+
+The completed [v1 release plan](2026-09-05-ironlint-v1-implementation.md) retains
+the verified release baseline. Tagging and publishing remain separate operator
+actions; its completed packets are not reopened by the follow-up plan.
 
 - [Current architecture](../docs/architecture.md): what the checkout implements.
 - [V1 contract](../specs/2026-09-05-ironlint-v1-design.md): required release behavior.

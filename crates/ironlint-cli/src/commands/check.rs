@@ -222,6 +222,12 @@ fn emit_v1(verdict: &V1Verdict, format: OutputFormat) -> Result<()> {
                     eprintln!("[{}] stderr: truncated", result.id);
                 }
             }
+            if let Some(error) = &verdict.error {
+                eprintln!("error: {error}");
+            }
+            for skipped in &verdict.not_run {
+                eprintln!("{}: not_run ({})", skipped.id, skipped.reason);
+            }
             println!(
                 "{}",
                 match verdict.status {

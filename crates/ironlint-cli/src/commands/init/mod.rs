@@ -6,7 +6,7 @@
 //! nonzero. Harness onboarding (wiring ironlint's hook into claude-code,
 //! codex, pi, opencode) is a separate phase handled by `onboard.rs`.
 
-mod git_hook;
+pub(crate) mod git_hook;
 mod onboard;
 mod render;
 mod select;
@@ -103,6 +103,9 @@ enum ExistingConfig {
 }
 
 fn classify_existing(cfg_path: &Path) -> Result<ExistingConfig> {
+    if ironlint_core::filesystem::regular_file(cfg_path)?.is_none() {
+        return Ok(ExistingConfig::Missing);
+    }
     match std::fs::read(cfg_path) {
         Ok(bytes) if bytes == BASELINE.as_bytes() => Ok(ExistingConfig::UnmodifiedBaseline(bytes)),
         Ok(_) => Ok(ExistingConfig::Other),
@@ -121,10 +124,52 @@ fn classify_existing(cfg_path: &Path) -> Result<ExistingConfig> {
 /// would let a concurrent writer get its content blessed (see
 /// `ironlint_core::trust::bless_bytes`).
 fn scaffold_config(dir: &Path, bless: &dyn Fn(&Path, &[u8]) -> Result<()>) -> Result<()> {
+    scaffold_config_with(dir, bless, &create_baseline)
+}
+
+fn create_baseline(path: &Path) -> Result<bool> {
+    use std::io::Write;
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => {
+            return Err(e).with_context(|| format!("exclusively creating {}", path.display()))
+        }
+    };
+    file.write_all(BASELINE.as_bytes())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all())
+        .with_context(|| {
+            format!(
+                "creating {}; incomplete bytes may remain, repair explicitly before retrying",
+                path.display()
+            )
+        })?;
+    ironlint_core::filesystem::sync_directory(path.parent().context("config has no directory")?)
+        .with_context(|| {
+            format!(
+                "created {} but directory durability could not be confirmed; retry",
+                path.display()
+            )
+        })?;
+    Ok(true)
+}
+
+fn scaffold_config_with(
+    dir: &Path,
+    bless: &dyn Fn(&Path, &[u8]) -> Result<()>,
+    create: &dyn Fn(&Path) -> Result<bool>,
+) -> Result<()> {
     let cfg_path = dir.join(".ironlint.yml");
     match classify_existing(&cfg_path)? {
         ExistingConfig::Missing => {
-            std::fs::write(&cfg_path, BASELINE)?;
+            if !create(&cfg_path)? {
+                return scaffold_config(dir, bless);
+            }
             bless(&cfg_path, BASELINE.as_bytes()).map_err(|e| {
                 anyhow!(
                     "scaffolded {} but could not trust it: {e:#}",
@@ -155,6 +200,58 @@ fn scaffold_config(dir: &Path, bless: &dyn Fn(&Path, &[u8]) -> Result<()>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn d2_scaffold_refuses_symlinks_including_dangling_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join(".ironlint.yml");
+        let target = tmp.path().join("target.yml");
+        let must_not_bless =
+            |_: &Path, _: &[u8]| -> Result<()> { panic!("symlink must not be blessed") };
+        std::os::unix::fs::symlink(&target, &cfg).unwrap();
+        let error = scaffold_config(tmp.path(), &must_not_bless).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error:#}");
+        assert!(!target.exists());
+        std::fs::write(&target, BASELINE).unwrap();
+        assert!(scaffold_config(tmp.path(), &must_not_bless).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), BASELINE.as_bytes());
+        assert!(std::fs::symlink_metadata(&cfg).unwrap().is_symlink());
+    }
+
+    #[test]
+    fn d2_scaffold_concurrent_creator_keeps_winner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let winner = b"version: 1\nchecks: {mine: {run: true}}\n";
+        let raced_create = |path: &Path| -> Result<bool> {
+            std::fs::write(path, winner)?;
+            create_baseline(path)
+        };
+        let never_bless =
+            |_: &Path, _: &[u8]| -> Result<()> { panic!("foreign winner must not be blessed") };
+        scaffold_config_with(tmp.path(), &never_bless, &raced_create).unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join(".ironlint.yml")).unwrap(),
+            winner
+        );
+    }
+
+    #[test]
+    fn d2_incomplete_scaffold_is_preserved_and_never_blessed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let incomplete_create = |path: &Path| -> Result<bool> {
+            std::fs::write(path, b"version:")?;
+            Err(anyhow!("injected interrupted write"))
+        };
+        let never_bless =
+            |_: &Path, _: &[u8]| -> Result<()> { panic!("partial file must not be blessed") };
+        assert!(scaffold_config_with(tmp.path(), &never_bless, &incomplete_create).is_err());
+        scaffold_config(tmp.path(), &never_bless).unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join(".ironlint.yml")).unwrap(),
+            b"version:"
+        );
+    }
 
     fn opts(dry_run: bool, no_hook: bool) -> Options {
         Options {

@@ -70,11 +70,10 @@ fn read_store_surfaces_non_notfound_errors() {
 }
 
 #[test]
-fn unique_tmp_path_differs_across_calls() {
-    let base = Path::new("/x/trust.json");
-    let a = unique_tmp_path(base);
-    let b = unique_tmp_path(base);
-    assert_ne!(a, b, "temp names must be unique per write");
+fn store_replacement_has_no_leftover_temporary() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_store(&tmp.path().join("trust.json"), &TrustStore::default()).unwrap();
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
 }
 
 #[test]

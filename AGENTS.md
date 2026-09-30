@@ -6,12 +6,16 @@ Guidance for work in this repository.
 
 - [Current architecture](docs/architecture.md): implemented behavior and source map.
 - [V1 contract](specs/2026-09-05-ironlint-v1-design.md): release requirements.
-- [Active plan](plans/2026-09-05-ironlint-v1-implementation.md): resume block,
-  current packet, dependencies, and evidence. Read only the relevant packet and
+- [Active plan](plans/2026-09-29-durability-simplification.md): resume block,
+  current packet, dependencies, and evidence.
+- [V1 release baseline](plans/2026-09-05-ironlint-v1-implementation.md): completed
+  release packets and verification evidence. Read only the relevant packet and
   contract sections before tracing code; do not load the whole documentation tree.
 
-Keep these documents current when behavior or scope changes. There is one active
-v1 plan and no historical planning archive. Do not revive removed roadmap items.
+Keep these documents current when behavior or scope changes. The active follow-up
+plan covers separately authorized engineering work; the completed v1 plan retains
+its release evidence. Do not duplicate execution plans, create a historical
+planning archive, or revive removed roadmap items.
 
 ## Current implementation and target
 

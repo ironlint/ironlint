@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const TRUST_STORE_VERSION: u32 = 2;
 
@@ -68,33 +67,10 @@ pub fn read_store(path: &Path) -> Result<TrustStore> {
     }
 }
 
-/// A sibling temp path unique to this call: `json.tmp.<pid>.<counter>`. Two
-/// writers targeting the same `path` (different processes, or different
-/// threads within one process racing the same store) never share a temp
-/// file, so one writer's write+rename can never clobber or be clobbered by
-/// another's mid-flight. The counter alone (no clock read) is enough:
-/// per-process it's strictly increasing, and across processes a stale
-/// leftover temp file at a reused pid+counter pair is simply overwritten
-/// before anyone reads it, since only the final `rename` target is load
-/// bearing.
-fn unique_tmp_path(path: &Path) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    path.with_extension(format!("json.tmp.{}.{n}", std::process::id()))
-}
-
-/// Write the store atomically: serialize to a sibling, per-write-unique temp
-/// file, then rename over the target.
+/// Publish through the shared replacement helper; caller retains store locking.
 pub fn write_store(path: &Path, store: &TrustStore) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(store)?;
-    let tmp = unique_tmp_path(path);
-    std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
-    Ok(())
+    crate::filesystem::replace(path, json.as_bytes())
 }
 
 /// Sibling lock-file path used to serialize concurrent `bless_in`

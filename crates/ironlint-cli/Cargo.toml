@@ -18,6 +18,9 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "macros", "underline-color", "layout-cache"] }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "process"] }
+
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true

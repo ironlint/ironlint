@@ -99,6 +99,8 @@ pub fn install(project_dir: &Path, bin: &Path) -> Result<HookState> {
         ));
     };
     let block = hook_block(bin);
+    let _locks = ironlint_core::filesystem::ResourceLocks::acquire(&[&hook])?;
+    ironlint_core::filesystem::regular_file(&hook)?;
     match std::fs::read(&hook) {
         Ok(bytes) => {
             let existing = String::from_utf8(bytes).map_err(|_| {
@@ -108,7 +110,9 @@ pub fn install(project_dir: &Path, bin: &Path) -> Result<HookState> {
                 )
             })?;
             match replace_marker(&existing, &block) {
-                Some(next) if next == existing => Ok(HookState::AlreadyPresent(hook)),
+                Some(next) if next == existing && owner_can_execute(&hook)? => {
+                    Ok(HookState::AlreadyPresent(hook))
+                }
                 Some(next) => {
                     write_exec(&hook, next.as_bytes())?;
                     Ok(HookState::Updated(hook))
@@ -143,6 +147,8 @@ pub fn uninstall(project_dir: &Path) -> Result<HookState> {
             "not inside a git work tree (no hook to remove)".into(),
         ));
     };
+    let _locks = ironlint_core::filesystem::ResourceLocks::acquire(&[&hook])?;
+    ironlint_core::filesystem::regular_file(&hook)?;
     match std::fs::read_to_string(&hook) {
         Ok(existing) => {
             let Some(start) = existing.find(MARKER_START) else {
@@ -161,8 +167,7 @@ pub fn uninstall(project_dir: &Path) -> Result<HookState> {
                     .with_context(|| format!("failed to remove {}", hook.display()))?;
                 Ok(HookState::Removed(hook))
             } else {
-                std::fs::write(&hook, rest)
-                    .with_context(|| format!("failed to write {}", hook.display()))?;
+                ironlint_core::filesystem::replace(&hook, rest.as_bytes())?;
                 Ok(HookState::Updated(hook))
             }
         }
@@ -189,7 +194,7 @@ pub fn hook_block(bin: &Path) -> String {
          fi\n\
          ROOT=\"$(git rev-parse --show-toplevel)\" || exit 1\n\
          [ -f \"$ROOT/.ironlint.yml\" ] || exit 0\n\
-         \"$BIN\" check --event accept --root \"$ROOT\" --config \"$ROOT/.ironlint.yml\"\n\
+         \"$BIN\" check --event accept --root \"$ROOT\" --config \"$ROOT/.ironlint.yml\" || exit \"$?\"\n\
          {MARKER_END}",
         sh_quote(bin)
     )
@@ -239,19 +244,46 @@ fn is_deletable(s: &str) -> bool {
 /// non-unix the write alone happens (the repo claims no extra Windows
 /// support).
 fn write_exec(path: &Path, bytes: &[u8]) -> Result<()> {
-    std::fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+    ironlint_core::filesystem::replace_executable(path, bytes)
+}
+
+fn owner_can_execute(path: &Path) -> Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("failed to chmod +x {}", path.display()))?;
+        Ok(std::fs::metadata(path)?.permissions().mode() & 0o100 != 0)
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn d2_identical_reinstall_activates_disabled_owned_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = git_dir();
+        let bin = Path::new("/bin/ironlint");
+        install(dir.path(), bin).unwrap();
+        let hook = hook_file(dir.path());
+        let bytes = std::fs::read(&hook).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            install(dir.path(), bin).unwrap(),
+            HookState::Updated(hook.clone())
+        );
+        assert_eq!(std::fs::read(&hook).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o744
+        );
+    }
 
     /// Create a throwaway git repo, returning the worktree dir.
     fn git_dir() -> tempfile::TempDir {

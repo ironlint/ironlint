@@ -28,34 +28,21 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Write `bytes` to `path` atomically (temp sibling + rename), creating parents.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("ironlint")
-    ));
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
-    Ok(())
+    crate::filesystem::replace(path, bytes)
 }
 
 /// Copy `path` to `<path>.bak` only if the file exists and no backup exists yet.
 pub fn backup_once(path: &Path) -> Result<()> {
-    if !path.exists() {
+    let Some(metadata) = crate::filesystem::regular_file(path)? else {
         return Ok(());
-    }
+    };
     let bak = path.with_extension(format!(
         "{}.bak",
         path.extension().and_then(|e| e.to_str()).unwrap_or("")
     ));
-    if bak.exists() {
-        return Ok(());
-    }
-    std::fs::copy(path, &bak).with_context(|| format!("backing up {}", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("reading backup source {}", path.display()))?;
+    crate::filesystem::create_once(&bak, &bytes, metadata.permissions())?;
     Ok(())
 }
 
@@ -83,12 +70,13 @@ pub fn write_sidecar(dir: &Path, sidecar: &AdapterSidecar) -> Result<()> {
 }
 
 pub fn read_sidecar(dir: &Path) -> Result<Option<AdapterSidecar>> {
-    match std::fs::read_to_string(sidecar_path(dir)) {
-        Ok(s) => Ok(Some(
-            serde_json::from_str(&s).with_context(|| "parsing adapter sidecar")?,
-        )),
+    let path = sidecar_path(dir);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(serde_json::from_str(&s).with_context(|| {
+            format!("parsing adapter sidecar {}", path.display())
+        })?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context("reading adapter sidecar"),
+        Err(e) => Err(e).with_context(|| format!("reading adapter sidecar {}", path.display())),
     }
 }
 
@@ -114,6 +102,35 @@ mod tests {
     }
 
     #[test]
+    fn d2_atomic_write_never_clobbers_a_colliding_temp_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let collision = path.with_extension("json.tmp");
+        std::fs::write(&collision, b"another writer's bytes").unwrap();
+        atomic_write(&path, b"new settings").unwrap();
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"another writer's bytes"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"new settings");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn d2_atomic_write_preserves_existing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("hook.sh");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+        atomic_write(&path, b"new").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o751
+        );
+    }
+
+    #[test]
     fn backup_once_preserves_first_original_only() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("settings.json");
@@ -133,6 +150,47 @@ mod tests {
         let p = tmp.path().join("missing.json");
         backup_once(&p).unwrap();
         assert!(!p.with_extension("json.bak").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn d2_backup_preserves_a_dangling_symlink_without_writing_its_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let target = tmp.path().join("foreign");
+        std::fs::write(&path, b"settings").unwrap();
+        std::os::unix::fs::symlink(&target, &backup).unwrap();
+        backup_once(&path).unwrap();
+        assert!(
+            !target.exists(),
+            "a dangling backup symlink must never redirect writes"
+        );
+        assert!(std::fs::symlink_metadata(&backup).unwrap().is_symlink());
+    }
+
+    #[test]
+    fn d2_backup_publication_failure_never_leaves_partial_final_backup() {
+        use crate::filesystem::{tests::fail_at, Stage};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let original = vec![b'x'; 65536];
+        std::fs::write(&path, &original).unwrap();
+        let fault = fail_at(&backup, Stage::BeforePublish);
+        assert!(backup_once(&path).is_err());
+        assert!(
+            !backup.exists(),
+            "failed publication must leave no partial final backup"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+        drop(fault);
+        backup_once(&path).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        std::fs::write(&path, b"later settings").unwrap();
+        backup_once(&path).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
     }
 
     #[test]

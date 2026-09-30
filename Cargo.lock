@@ -876,6 +876,7 @@ dependencies = [
  "expectrl",
  "insta",
  "ironlint-core",
+ "nix 0.31.3",
  "predicates",
  "ratatui",
  "serde",

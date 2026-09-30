@@ -2,6 +2,7 @@
 mod json_settings;
 mod materialize;
 mod ops;
+mod ownership;
 mod plan;
 mod registry;
 
@@ -11,10 +12,11 @@ pub use materialize::{
     write_sidecar, AdapterSidecar,
 };
 pub use ops::{
-    install, install_skill, status, uninstall, uninstall_skill, HarnessStatus, InstallOutcome,
-    InstallResult,
+    install, install_skill, status, status_paths, uninstall, uninstall_skill, HarnessStatus,
+    InstallOutcome, InstallResult, StatusPaths,
 };
 pub use ops::{plan_install, plan_uninstall};
+pub use ownership::pending_sidecar_path;
 pub use plan::PlanStep;
 pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME};
 

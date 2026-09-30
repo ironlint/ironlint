@@ -16,10 +16,15 @@
 //! receipt (`ironlint-cli-receipt.json`) under the config dir it would have
 //! been written to. All decision/formatting logic lives in the pure `render`
 //! helper (unit-tested in-process); the only I/O is the small [`perform`]
-//! shim that resolves the receipt and execs the installer. The no-receipt
-//! branch is covered end-to-end by `tests/cli_e2e_update.rs`.
+//! shim that resolves the receipt and runs bounded download/install subprocesses.
+//! End-to-end tests use isolated receipts and fake downloaders; no live update
+//! is needed to exercise success or partial-download failure.
 
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -83,37 +88,246 @@ fn perform() -> Outcome {
     run_installer()
 }
 
-/// Run the dist installer for the current platform, inheriting stdio. The
-/// installer is idempotent (exits 0 when already current) and self-replaces
-/// the binary in place. Any nonzero exit is surfaced as a failure carrying
-/// the installer's own exit code.
+#[derive(Clone, Copy)]
+struct UpdateLimits {
+    download: Duration,
+    total: Duration,
+    cleanup: Duration,
+}
+
+const UPDATE_LIMITS: UpdateLimits = UpdateLimits {
+    download: Duration::from_secs(60),
+    total: Duration::from_secs(300),
+    cleanup: Duration::from_secs(1),
+};
+
+/// Download completely before executing, retaining the installer's stdio and
+/// checking both outcomes. The private seam supplies isolated tools and short
+/// deadlines to tests without changing production environment semantics.
 fn run_installer() -> Outcome {
-    use std::process::Command;
-    let status = if cfg!(windows) {
-        Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &format!("irm {INSTALLER_PS1_URL} | iex"),
-            ])
-            .status()
+    let (downloader, installer) = if cfg!(windows) {
+        ("powershell", "powershell")
     } else {
-        Command::new("sh")
-            .args(["-c", &format!("curl -LsSf {INSTALLER_SH_URL} | sh")])
-            .status()
+        ("curl", "sh")
     };
-    match status {
-        Ok(s) if s.success() => Outcome::Updated,
-        // `ExitStatus`'s `Display` is already "exit status: N", so render the
-        // raw code to avoid a doubled "exit status: exit status: N" message.
-        Ok(s) => Outcome::Failed {
-            reason: format!("installer exited with code {}", s.code().unwrap_or(-1)),
+    run_installer_with(
+        Path::new(downloader),
+        Path::new(installer),
+        &std::env::temp_dir(),
+        UPDATE_LIMITS,
+    )
+}
+
+fn run_installer_with(
+    downloader: &Path,
+    installer: &Path,
+    temp_root: &Path,
+    limits: UpdateLimits,
+) -> Outcome {
+    let Some(deadline) = Instant::now().checked_add(limits.total) else {
+        return Outcome::Failed {
+            reason: "update deadline overflow".into(),
+        };
+    };
+    let mut temporary = match TemporaryInstaller::create(temp_root) {
+        Ok(temporary) => temporary,
+        Err(reason) => return Outcome::Failed { reason },
+    };
+    let result = download_and_install(downloader, installer, &temporary.path, deadline, limits);
+    let cleanup = temporary.remove();
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Outcome::Updated,
+        (Err(reason), Ok(())) => Outcome::Failed { reason },
+        (result, Err(error)) => Outcome::Failed {
+            reason: format!(
+                "{}; failed to remove temporary installer {}: {error}",
+                result.err().unwrap_or_else(|| "installer completed".into()),
+                temporary.path.display()
+            ),
         },
-        Err(e) => Outcome::Failed {
-            reason: format!("failed to spawn installer: {e}"),
-        },
+    }
+}
+
+fn download_and_install(
+    downloader: &Path,
+    installer: &Path,
+    path: &Path,
+    deadline: Instant,
+    limits: UpdateLimits,
+) -> std::result::Result<(), String> {
+    let download_deadline = Instant::now()
+        .checked_add(limits.download)
+        .unwrap_or(deadline)
+        .min(deadline);
+    run_stage(
+        download_command(downloader, path),
+        "download",
+        download_deadline,
+        limits.cleanup,
+    )?;
+    installer_file(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("failed to finalize downloaded installer: {error}"))?;
+    run_stage(
+        installer_command(installer, path),
+        "installer",
+        deadline,
+        limits.cleanup,
+    )
+}
+
+fn installer_file(path: &Path) -> std::io::Result<File> {
+    // Windows FlushFileBuffers requires write access. Neither create nor
+    // truncate is enabled: finalization must retain the downloaded bytes.
+    OpenOptions::new().read(true).write(true).open(path)
+}
+
+fn download_command(downloader: &Path, path: &Path) -> Command {
+    let mut command = Command::new(downloader);
+    if cfg!(windows) {
+        command
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+            .arg(format!(
+                "try {{ Invoke-WebRequest -Uri '{INSTALLER_PS1_URL}' -OutFile $env:IRONLINT_UPDATE_INSTALLER -ErrorAction Stop }} catch {{ Write-Error $_; exit 1 }}"
+            ))
+            .env("IRONLINT_UPDATE_INSTALLER", path);
+    } else {
+        command
+            .args(["-LsSf", "--max-time", "60", "-o"])
+            .arg(path)
+            .arg(INSTALLER_SH_URL);
+    }
+    command
+}
+
+fn installer_command(installer: &Path, path: &Path) -> Command {
+    let mut command = Command::new(installer);
+    if cfg!(windows) {
+        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+    }
+    command.arg(path);
+    command
+}
+
+fn run_stage(
+    mut command: Command,
+    stage: &str,
+    deadline: Instant,
+    cleanup: Duration,
+) -> std::result::Result<(), String> {
+    if Instant::now() >= deadline {
+        return Err(format!("{stage} deadline exceeded"));
+    }
+    command.stdin(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to spawn {stage}: {error}"))?;
+    match wait_until(&mut child, deadline) {
+        Ok(Some(status)) if status.success() => Ok(()),
+        Ok(Some(status)) => Err(format!(
+            "{stage} exited with code {}",
+            status.code().unwrap_or(-1)
+        )),
+        result => {
+            let reason = match result {
+                Ok(None) => format!("{stage} deadline exceeded"),
+                Err(error) => format!("failed to wait for {stage}: {error}"),
+                Ok(Some(_)) => unreachable!(),
+            };
+            Err(stop_stage(&mut child, cleanup)
+                .map_or(reason.clone(), |error| format!("{reason}; {error}")))
+        }
+    }
+}
+
+fn wait_until(child: &mut Child, deadline: Instant) -> std::io::Result<Option<ExitStatus>> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
+fn stop_stage(child: &mut Child, cleanup: Duration) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+        let _ = killpg(Pid::from_raw(child.id().cast_signed()), Signal::SIGKILL);
+    }
+    let _ = child.kill();
+    let deadline = Instant::now()
+        .checked_add(cleanup)
+        .unwrap_or_else(Instant::now);
+    match wait_until(child, deadline) {
+        Ok(Some(_)) => None,
+        Ok(None) => Some("child cleanup deadline exceeded; process exit was not observed".into()),
+        Err(error) => Some(format!("failed to reap child: {error}")),
+    }
+}
+
+struct TemporaryInstaller {
+    path: PathBuf,
+    removed: bool,
+}
+
+impl TemporaryInstaller {
+    fn create(root: &Path) -> std::result::Result<Self, String> {
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let suffix = if cfg!(windows) { "ps1" } else { "sh" };
+        for _ in 0..100 {
+            let path = root.join(format!(
+                "ironlint-update-{}-{}.{suffix}",
+                std::process::id(),
+                NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(_) => {
+                    return Ok(Self {
+                        path,
+                        removed: false,
+                    })
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("failed to create temporary installer: {error}")),
+            }
+        }
+        Err("temporary installer name collisions exhausted".into())
+    }
+
+    fn remove(&mut self) -> std::io::Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        self.removed = true;
+        Ok(())
+    }
+}
+
+impl Drop for TemporaryInstaller {
+    fn drop(&mut self) {
+        if !self.removed {
+            let _ = self.remove();
+        }
     }
 }
 
@@ -305,6 +519,298 @@ mod tests {
             !reason.contains("exit status"),
             "doubled phrase leaked into reason: {reason}"
         );
+    }
+
+    #[cfg(unix)]
+    fn fake_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn fake_download(dir: &Path, payload: &str, ending: &str) -> PathBuf {
+        fake_tool(
+            dir,
+            "curl",
+            &format!(
+                "while [ \"$#\" -gt 0 ]; do
+                   if [ \"$1\" = -o ]; then shift; target=$1; fi
+                   shift
+                 done
+                 printf '%s\\n' '{}' > \"$target\"
+                 {ending}",
+                payload.replace('\'', "'\\''")
+            ),
+        )
+    }
+
+    #[cfg(unix)]
+    fn short_limits() -> UpdateLimits {
+        UpdateLimits {
+            download: Duration::from_secs(2),
+            total: Duration::from_secs(4),
+            cleanup: Duration::from_secs(1),
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_no_temporary_installer(dir: &Path) {
+        assert!(!std::fs::read_dir(dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("ironlint-update-")
+        }));
+    }
+
+    #[cfg(unix)]
+    fn assert_failed(outcome: Outcome, expected: &str) {
+        match outcome {
+            Outcome::Failed { reason } => assert!(reason.contains(expected), "{reason}"),
+            other => panic!("expected {expected}, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fully_downloaded_installer_executes_and_temporary_file_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("installer-ran");
+        let downloader = fake_download(
+            dir.path(),
+            &format!("printf success > '{}'", marker.display()),
+            "exit 0",
+        );
+        let outcome = run_installer_with(
+            &downloader,
+            Path::new("/bin/sh"),
+            dir.path(),
+            short_limits(),
+        );
+        assert_eq!(outcome, Outcome::Updated);
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "success");
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_downloader_or_installer_reports_the_failed_stage_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        assert_failed(
+            run_installer_with(&missing, Path::new("/bin/sh"), dir.path(), short_limits()),
+            "spawn download",
+        );
+        assert_no_temporary_installer(dir.path());
+        let downloader = fake_download(dir.path(), "exit 0", "exit 0");
+        assert_failed(
+            run_installer_with(&downloader, &missing, dir.path(), short_limits()),
+            "spawn installer",
+        );
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installer_nonzero_is_reported_and_temporary_file_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloader = fake_download(dir.path(), "exit 13", "exit 0");
+        assert_failed(
+            run_installer_with(
+                &downloader,
+                Path::new("/bin/sh"),
+                dir.path(),
+                short_limits(),
+            ),
+            "installer exited with code 13",
+        );
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn downloader_deadline_stops_its_process_group_and_removes_partial_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("descendant.pid");
+        let downloader = fake_download(
+            dir.path(),
+            "exit 0",
+            &format!(
+                "/bin/sleep 30 &\nprintf '%s' $! > '{}'\nwait",
+                pid_file.display()
+            ),
+        );
+        let started = Instant::now();
+        assert_failed(
+            run_installer_with(
+                &downloader,
+                Path::new("/bin/sh"),
+                dir.path(),
+                short_limits(),
+            ),
+            "download deadline exceeded",
+        );
+        assert!(started.elapsed() < Duration::from_secs(6));
+        assert_pid_stopped(&pid_file);
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    fn assert_pid_stopped(pid_file: &Path) {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+        let pid = Pid::from_raw(std::fs::read_to_string(pid_file).unwrap().parse().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while kill(pid, None).is_ok() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            kill(pid, None),
+            Err(nix::errno::Errno::ESRCH),
+            "child {pid} survived cleanup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installer_uses_remaining_overall_deadline_and_is_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("installer.pid");
+        let downloader = fake_download(
+            dir.path(),
+            &format!(
+                "printf '%s' $$ > '{}'\nexec /bin/sleep 30",
+                pid_file.display()
+            ),
+            "/bin/sleep 0.10\nexit 0",
+        );
+        let started = Instant::now();
+        assert_failed(
+            run_installer_with(
+                &downloader,
+                Path::new("/bin/sh"),
+                dir.path(),
+                short_limits(),
+            ),
+            "installer deadline exceeded",
+        );
+        assert!(started.elapsed() < Duration::from_secs(6));
+        assert_pid_stopped(&pid_file);
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_deadline_does_not_spawn_a_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("spawned");
+        let tool = fake_tool(
+            dir.path(),
+            "stage",
+            &format!("touch '{}'", marker.display()),
+        );
+        assert_failed(
+            Outcome::Failed {
+                reason: run_stage(
+                    Command::new(tool),
+                    "download",
+                    Instant::now(),
+                    Duration::ZERO,
+                )
+                .unwrap_err(),
+            },
+            "download deadline exceeded",
+        );
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unusable_temporary_directory_reports_failure_without_spawning() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        assert_failed(
+            run_installer_with(&missing, &missing, &missing, short_limits()),
+            "create temporary installer",
+        );
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_deadline_overflow_does_not_create_or_execute_an_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        let limits = UpdateLimits {
+            total: Duration::MAX,
+            ..short_limits()
+        };
+        assert_failed(
+            run_installer_with(&missing, &missing, dir.path(), limits),
+            "deadline overflow",
+        );
+        assert_no_temporary_installer(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_failure_is_reported_even_after_installer_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloader = fake_download(dir.path(), "rm \"$0\"; mkdir \"$0\"", "exit 0");
+        assert_failed(
+            run_installer_with(
+                &downloader,
+                Path::new("/bin/sh"),
+                dir.path(),
+                short_limits(),
+            ),
+            "failed to remove temporary installer",
+        );
+    }
+
+    #[test]
+    fn cleanup_guard_stops_owning_a_path_after_successful_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut temporary = TemporaryInstaller::create(dir.path()).unwrap();
+        let path = temporary.path.clone();
+        temporary.remove().unwrap();
+        std::fs::write(&path, "foreign replacement").unwrap();
+        drop(temporary);
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "foreign replacement"
+        );
+    }
+
+    #[test]
+    fn temporary_installer_guard_cleans_up_on_early_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let temporary = TemporaryInstaller::create(dir.path()).unwrap();
+        let path = temporary.path.clone();
+        drop(temporary);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn finalized_installer_handle_is_writable_without_truncating_downloaded_bytes() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("installer.sh");
+        let contents = b"#!/bin/sh\nexit 0\n";
+        std::fs::write(&path, contents).unwrap();
+        let mut file = installer_file(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), contents);
+        // Rewrite the same first byte: the handle must allow the write access
+        // Windows requires for FlushFileBuffers, without changing the script.
+        file.write_all(&contents[..1])
+            .expect("finalization requires a writable handle");
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(std::fs::read(path).unwrap(), contents);
     }
 
     #[test]

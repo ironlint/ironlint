@@ -8,11 +8,13 @@
   `4828bfcd1811a1ef51c728bb32b977005d952713` (`feat(v1): release IronLint
   1.0.0`), and all nine release commands passed on that SHA. Both trust blockers
   are fixed and pinned by failing-first regressions. The tree is tag-ready.
-- **Current commit:** `4828bfcd1811a1ef51c728bb32b977005d952713`; clean
-  checkout.
-- **Current task:** the operator decision on tagging and publishing only. The
-  remaining known limitations and the pre-commit hook action item are in the
-  2026-09-18 checkpoint.
+- **Verified release commit:** `4828bfcd1811a1ef51c728bb32b977005d952713`;
+  clean checkout at verification.
+- **Follow-up work:** the separately authorized
+  [durability and simplification plan](2026-09-29-durability-simplification.md)
+  is the current engineering work. This release plan's packets remain complete;
+  tagging and publishing are separate operator decisions. The original known
+  limitations and pre-commit hook action item are in the 2026-09-18 checkpoint.
 - **Scope decision (2026-09-14):** the user replaced mandatory hosted-repository
   and live-harness proof with Docker feature E2E tests. Adapter domains or separate
   projects own their respective harness evolution and qualification.

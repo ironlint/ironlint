@@ -65,10 +65,20 @@ pub fn evaluate_v1(
             &execution.outcome,
             V1ExecutionOutcome::Pass | V1ExecutionOutcome::Violation
         );
+        let total_timed_out = Instant::now() >= total_deadline
+            && matches!(
+                execution.outcome,
+                V1ExecutionOutcome::Error(V1ExecutionError::Timeout)
+            );
         results.push(result_for(id, execution));
         if failed {
-            mark_not_run(&mut not_run, &selected[index + 1..], "execution_error");
-            error = results.last().and_then(|result| result.reason.clone());
+            if total_timed_out {
+                mark_not_run(&mut not_run, &selected[index + 1..], "total_timeout");
+                error = Some("total_timeout".to_string());
+            } else {
+                mark_not_run(&mut not_run, &selected[index + 1..], "execution_error");
+                error = results.last().and_then(|result| result.reason.clone());
+            }
             break;
         }
     }
