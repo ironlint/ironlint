@@ -1,4 +1,76 @@
 use super::*;
+
+#[test]
+fn d5_streamed_fold_matches_independent_legacy_frame_golden() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("binary.sh"), b"first\0\xffsecond").unwrap();
+    let files = script_files::collect(tmp.path(), None).unwrap();
+    let label = "scripts\0/repo/.ironlint/scripts\0binary.sh".to_string();
+    let mut fold = PolicyFold {
+        direct: Sha256::new(),
+        relative: Some(Sha256::new()),
+        digests: Vec::new(),
+    };
+    fold.add_file(label.clone(), Some(label), &files[0], None)
+        .unwrap();
+    // Independently calculated with Python hashlib and the original u64 LE frame.
+    let expected = "sha256:631dacffa8a558ef62073fa1ba187a95f06f2db4999690b50c8a03ec5319cf1d";
+    assert_eq!(sha256_digest_hex(&fold.direct.finalize()), expected);
+    assert_eq!(
+        sha256_digest_hex(&fold.relative.unwrap().finalize()),
+        expected
+    );
+    assert_eq!(
+        sha256_digest_hex(&fold.digests[0].1),
+        "sha256:4759385cd74abcc95a04cca17f3ecbf62438b1fb67432a24e0f08035abc86987"
+    );
+}
+
+#[test]
+fn d5_added_after_enumeration_is_not_omitted_from_verification() {
+    let tmp = tempfile::tempdir().unwrap();
+    let policy = tmp.path().join(".ironlint.yml");
+    fs::write(&policy, "version: 1\nchecks:\n  a: {run: 'exit 0'}\n").unwrap();
+    let dir = tmp.path().join(".ironlint/scripts");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("old.sh"), b"old").unwrap();
+    let approved = read_and_hash(&policy).unwrap();
+    let target = dir.canonicalize().unwrap();
+    let mut changed = false;
+    let _hook = script_files::tests::with_hook(move |point, path| {
+        if point == script_files::Point::Listed && path == target && !changed {
+            changed = true;
+            fs::write(target.join("new.sh"), b"new")?;
+        }
+        Ok(())
+    });
+    let error = approved.verify_unchanged().unwrap_err();
+    assert!(format!("{error:#}").contains("scripts changed during verification"));
+}
+
+#[test]
+fn d5_linear_drift_comparison_reports_add_modify_and_remove() {
+    let old = vec![
+        ("a".into(), [0; 32]),
+        ("b".into(), [0; 32]),
+        ("d".into(), [0; 32]),
+    ];
+    let new = vec![
+        ("a".into(), [1; 32]),
+        ("c".into(), [0; 32]),
+        ("e".into(), [0; 32]),
+    ];
+    assert_eq!(
+        drifted_entries(&old, &new),
+        [
+            "a (modified or added)",
+            "b (removed)",
+            "c (modified or added)",
+            "d (removed)",
+            "e (modified or added)"
+        ]
+    );
+}
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -39,6 +111,23 @@ fn hash_is_deterministic_and_prefixed() {
     assert!(
         a.starts_with("sha256:"),
         "hash must be sha256-prefixed: {a}"
+    );
+}
+
+#[test]
+fn worktree_hash_keeps_legacy_framing() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    write(&cfg, "version: 1\nchecks:\n  ok: {run: 'true'}\n");
+    write(
+        &dir.path().join(".ironlint/scripts/a.sh"),
+        "#!/bin/sh\nexit 0\n",
+    );
+    let scope = WorktreeScope::discover(&cfg).unwrap();
+    assert_eq!(
+        compute_worktree_hash(&cfg, &scope).unwrap().unwrap(),
+        "sha256:502d2a40c87cf423407b2ceb245b548312403b7e2bd9befe45fa691e9754250d"
     );
 }
 

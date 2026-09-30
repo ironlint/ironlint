@@ -2,7 +2,8 @@
 //!
 //! Prints each check in id order, annotated by the origin file it was defined
 //! in. `tsv` (default) emits `check_id<TAB>origin<TAB>files(comma-joined)<TAB>run`;
-//! `yaml` and `json` emit a sequence of `{ check, origin, files, run }`.
+//! followed by the optional timeout override and effective command timeout.
+//! `yaml` and `json` emit rows with those same fields.
 //! Read-only. Does not run any check.
 
 use crate::cli::ShowFormat;
@@ -16,6 +17,8 @@ struct ResolvedCheck {
     origin: String,
     files: Vec<String>,
     run: String,
+    timeout_secs: Option<u64>,
+    effective_timeout_secs: u64,
 }
 
 pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
@@ -27,9 +30,7 @@ pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
         }
     };
     let rows = match crate::commands::config::load_read_only_with_path(&config_path) {
-        Ok((config_path, crate::commands::config::ReadOnlyConfig::V1(v1))) => {
-            build_v1_rows(&v1, &config_path)
-        }
+        Ok((config_path, v1)) => build_v1_rows(&v1, &config_path),
         Err(e) => {
             eprintln!("error: {:#}", e);
             return Ok(1);
@@ -43,17 +44,16 @@ pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
     Ok(0)
 }
 
-fn build_v1_rows(
-    cfg: &crate::commands::config::V1InspectionConfig,
-    origin: &Path,
-) -> Vec<ResolvedCheck> {
-    cfg.checks
+fn build_v1_rows(cfg: &ironlint_core::config::V1Config, origin: &Path) -> Vec<ResolvedCheck> {
+    cfg.checks()
         .iter()
         .map(|(id, check)| ResolvedCheck {
             check: id.clone(),
             origin: origin.display().to_string(),
-            files: check.files.clone().unwrap_or_default(),
-            run: check.run.clone(),
+            files: check.files().unwrap_or_default().to_vec(),
+            run: check.run().to_owned(),
+            timeout_secs: check.timeout_secs(),
+            effective_timeout_secs: check.effective_timeout_secs(cfg.execution()),
         })
         .collect()
 }
@@ -61,11 +61,15 @@ fn build_v1_rows(
 fn print_tsv(rows: &[ResolvedCheck]) {
     for r in rows {
         println!(
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             r.check,
             r.origin,
             r.files.join(","),
-            r.run
+            r.run,
+            r.timeout_secs
+                .map(|timeout| timeout.to_string())
+                .unwrap_or_default(),
+            r.effective_timeout_secs
         );
     }
 }

@@ -1,14 +1,12 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use super::policy_hash::{
-    compute_hash, compute_worktree_hash, hash_policy_bytes, read_and_hash, ApprovedPolicy,
-};
+use super::policy_hash::ApprovedPolicy;
 use super::store::{
     acquire_store_lock, canonical_key, read_store, read_store_for_bless, trust_store_path,
     write_store, TrustEntry, TrustStore, TRUST_STORE_VERSION,
 };
-use super::worktree::WorktreeScope;
+use crate::policy::PolicySnapshot;
 
 /// Outcome of a trust-enforcement attempt against a specific store.
 ///
@@ -44,14 +42,11 @@ pub enum TrustOutcome {
 /// Classify a trust-enforcement attempt against `store_path`. See
 /// [`TrustOutcome`] for what each variant means and why the split exists.
 pub fn check_trust_in(config_path: &Path, store_path: &Path) -> TrustOutcome {
-    let approved = match read_and_hash(config_path) {
-        Ok(approved) => approved,
+    let snapshot = match PolicySnapshot::load(config_path) {
+        Ok(snapshot) => snapshot,
         Err(e) => return TrustOutcome::Unverifiable(e),
     };
-    let key = match canonical_key(config_path) {
-        Ok(k) => k,
-        Err(e) => return TrustOutcome::Unverifiable(e),
-    };
+    let key = canonical_key(snapshot.config_path());
     let store = match read_store(store_path) {
         Ok(s) => s,
         Err(e) => return TrustOutcome::Untrusted(e),
@@ -60,13 +55,13 @@ pub fn check_trust_in(config_path: &Path, store_path: &Path) -> TrustOutcome {
     if store
         .entries
         .get(&key)
-        .is_some_and(|entry| entry.hash == approved.hash)
+        .is_some_and(|entry| entry.hash == snapshot.hash())
     {
-        return TrustOutcome::Trusted(approved);
+        return TrustOutcome::Trusted(ApprovedPolicy::new(snapshot));
     }
     // 2. Inherited worktree trust (only after a direct miss).
-    if inherited_trusted(config_path, &store) {
-        return TrustOutcome::Trusted(approved);
+    if inherited_trusted(&snapshot, &store) {
+        return TrustOutcome::Trusted(ApprovedPolicy::new(snapshot));
     }
     TrustOutcome::Untrusted(anyhow::anyhow!(
         "config/scripts not trusted — review and run `ironlint trust`"
@@ -74,18 +69,15 @@ pub fn check_trust_in(config_path: &Path, store_path: &Path) -> TrustOutcome {
 }
 
 /// Step 5: look up `worktree_entries[common_dir][config_rel]` by worktree hash.
-fn inherited_trusted(config_path: &Path, store: &TrustStore) -> bool {
-    let Some(scope) = WorktreeScope::discover(config_path) else {
-        return false;
-    };
-    let Ok(Some(wt_hash)) = compute_worktree_hash(config_path, &scope) else {
+fn inherited_trusted(snapshot: &PolicySnapshot, store: &TrustStore) -> bool {
+    let Some((scope, hash)) = &snapshot.identity.worktree else {
         return false;
     };
     store
         .worktree_entries
         .get(scope.common_dir.to_string_lossy().as_ref())
         .and_then(|m| m.get(&scope.config_rel))
-        .is_some_and(|e| e.hash == wt_hash)
+        .is_some_and(|e| e.hash == *hash)
 }
 
 /// Verify `config_path` (and its scripts) match a blessed entry in the
@@ -110,10 +102,9 @@ pub fn ensure_trusted_in(config_path: &Path, store_path: &Path) -> Result<()> {
 /// existing store is tolerated (see [`read_store_for_bless`]) so blessing
 /// doubles as the recovery path.
 pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> {
-    crate::config::v1::parse_v1_file(config_path)
+    let snapshot = PolicySnapshot::load(config_path)
         .context("refusing to trust a config that does not parse as v1")?;
-    let hash = compute_hash(config_path)?;
-    write_blessed_entry(config_path, hash, store_path, now)
+    write_blessed_entry(&snapshot, store_path, now)
 }
 
 /// Recompute the hash of `policy_bytes` **as the content of** `config_path`
@@ -130,22 +121,16 @@ pub fn bless_bytes_in(
     store_path: &Path,
     now: &str,
 ) -> Result<()> {
-    crate::config::v1::parse_v1_bytes(policy_bytes)
+    let snapshot = PolicySnapshot::from_bytes(config_path, policy_bytes)
         .context("refusing to trust a config that does not parse as v1")?;
-    let hash = hash_policy_bytes(config_path, policy_bytes)?;
-    write_blessed_entry(config_path, hash, store_path, now)
+    write_blessed_entry(&snapshot, store_path, now)
 }
 
-/// Store `hash` under the canonical key of `config_path` plus the eligible
+/// Store the captured direct hash under its canonical key plus the eligible
 /// worktree entry. Single write path shared by both bless entry points so the
 /// store contract cannot diverge between them.
-fn write_blessed_entry(
-    config_path: &Path,
-    hash: String,
-    store_path: &Path,
-    now: &str,
-) -> Result<()> {
-    let key = canonical_key(config_path)?;
+fn write_blessed_entry(snapshot: &PolicySnapshot, store_path: &Path, now: &str) -> Result<()> {
+    let key = canonical_key(snapshot.config_path());
 
     let _lock = acquire_store_lock(store_path)?;
     let mut store = read_store_for_bless(store_path)?;
@@ -153,30 +138,25 @@ fn write_blessed_entry(
     store.entries.insert(
         key,
         TrustEntry {
-            hash,
+            hash: snapshot.hash().to_owned(),
             blessed_at: now.to_string(),
         },
     );
-    write_worktree_entry(&mut store, config_path, now);
+    write_worktree_entry(&mut store, snapshot, now);
     write_store(store_path, &store)
 }
 
-/// If `config_path` has an eligible worktree scope, record its worktree hash
-/// (identical content, root-relative labels) in `worktree_entries`. Best-effort:
-/// any discovery/hash failure is swallowed — blessing still succeeds with the
-/// direct entry already written by the caller.
-fn write_worktree_entry(store: &mut TrustStore, config_path: &Path, now: &str) {
-    let Some(scope) = WorktreeScope::discover(config_path) else {
-        return;
-    };
-    let Ok(Some(wt_hash)) = compute_worktree_hash(config_path, &scope) else {
+/// Record the eligible worktree hash captured with the direct hash. Discovery
+/// remains best-effort; policy and scripts are never re-read while writing.
+fn write_worktree_entry(store: &mut TrustStore, snapshot: &PolicySnapshot, now: &str) {
+    let Some((scope, hash)) = &snapshot.identity.worktree else {
         return;
     };
     let common = scope.common_dir.to_string_lossy().to_string();
     store.worktree_entries.entry(common).or_default().insert(
-        scope.config_rel,
+        scope.config_rel.clone(),
         TrustEntry {
-            hash: wt_hash,
+            hash: hash.clone(),
             blessed_at: now.to_string(),
         },
     );

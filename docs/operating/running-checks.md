@@ -25,6 +25,15 @@ See [JSON results](../reference/verdict-json.md) for exits and results. A change
 invocation can return exit 0 with `not_run`; acceptance needs a complete pass.
 
 Default execution limits are 30 seconds per check and 300 seconds per batch.
+Override the command default with `execution.timeout_secs`, or set a check's
+own `timeout_secs` (IronLint 1.1.0+). A longer check override still ends at the
+invocation deadline. Policy edits require reviewed, renewed consent.
 IronLint continues after violations, stops on execution errors or an exhausted
 budget, and reports selected checks left unrun. Checks execute serially once
 each, including for a multi-file batch.
+
+The total deadline covers selection, policy/script verification, commands,
+output handling, and final verification. Initial snapshot loading and consent
+lookup precede it. Expired final verification returns an error while retaining
+completed results. Verification checks expiry between filesystem operations;
+uninterruptible OS I/O can overrun the deadline, and cleanup has a bounded grace.

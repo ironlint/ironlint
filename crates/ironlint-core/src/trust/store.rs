@@ -158,12 +158,10 @@ pub(super) fn read_store_for_bless(store_path: &Path) -> Result<TrustStore> {
     classify_store_read(store_path, std::fs::read_to_string(store_path))
 }
 
-/// Canonical absolute path used as the store key for `config_path`.
-pub(super) fn canonical_key(config_path: &Path) -> Result<String> {
-    let canon = config_path
-        .canonicalize()
-        .with_context(|| format!("resolving {}", config_path.display()))?;
-    Ok(canon.to_string_lossy().to_string())
+/// Encode the captured canonical path as the store key, without consulting the
+/// live filesystem again. Callers canonicalize while capturing the policy.
+pub(super) fn canonical_key(canonical: &Path) -> String {
+    canonical.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]

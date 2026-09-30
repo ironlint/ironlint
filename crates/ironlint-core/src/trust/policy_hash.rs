@@ -1,7 +1,10 @@
+use super::script_files::{self, ScriptFile};
 use crate::adapter::sha256_digest_hex;
+use crate::deadline;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use super::worktree::WorktreeScope;
 
@@ -9,10 +12,14 @@ use super::worktree::WorktreeScope;
 /// label and the content, so no two distinct (label, bytes) pairs can collide
 /// by concatenation.
 fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
+    hash_prefix(hasher, label, bytes.len() as u64);
+    hasher.update(bytes);
+}
+
+fn hash_prefix(hasher: &mut Sha256, label: &str, len: u64) {
     hasher.update((label.len() as u64).to_le_bytes());
     hasher.update(label.as_bytes());
-    hasher.update((bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
+    hasher.update(len.to_le_bytes());
 }
 
 /// Filesystem classification of a path in the scripts hash walk, computed via
@@ -75,50 +82,9 @@ pub(super) fn classify_entry(path: &Path) -> Result<EntryKind> {
     }
 }
 
-/// Recursively collect `(relative-path, bytes)` for every file under `dir`,
-/// with `/`-separated relative paths for cross-platform determinism.
-pub(super) fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut out = Vec::new();
-    collect_into(dir, dir, &mut out)?;
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
-}
-
-fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<()> {
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        match classify_entry(&path)? {
-            EntryKind::Dir => collect_into(root, &path, out)?,
-            EntryKind::File => {
-                let rel = path
-                    .strip_prefix(root)
-                    .expect("walked path must live under the scripts root")
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                let bytes =
-                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-                out.push((rel, bytes));
-            }
-            EntryKind::Missing => {
-                // TOCTOU: read_dir just enumerated this entry, so it should
-                // exist. If it vanished between listing and stat, fail
-                // loudly rather than silently under-hashing the scripts dir.
-                anyhow::bail!(
-                    "scripts dir entry disappeared mid-walk ({})",
-                    path.display()
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Derive the `.ironlint/scripts` directory beside each policy path. Shared
 /// by [`compute_hash`] (which folds these into the
-/// hash) and [`blessed_summary`] (which enumerates them for display), so the
+/// hash) and [`super::blessed_summary`] (which enumerates them for display), so the
 /// two can never disagree about which directories are in scope.
 pub(super) fn policy_script_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut script_dirs: Vec<PathBuf> = config_paths
@@ -135,79 +101,91 @@ pub(super) fn policy_script_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
     script_dirs
 }
 
-/// A trust-verified snapshot of a v1 policy and every managed script folded
-/// into its hash.
-///
-/// The bytes held here are the ones the operator approved. Evaluation must
-/// parse the policy from [`ApprovedPolicy::policy_bytes`] and must refuse to
-/// run whenever [`ApprovedPolicy::verify_unchanged`] reports drift; re-reading
-/// the live policy path after verification is the TOCTOU this type closes.
-pub struct ApprovedPolicy {
-    config_path: PathBuf,
-    policy_bytes: Vec<u8>,
-    /// One digest per folded blob, in fold order. Deliberately **not** the blob
-    /// bytes: the snapshot lives for the whole run and a fresh live copy is
-    /// built before every check, so retaining managed-script content would
-    /// double the resident footprint of a large `.ironlint/scripts/` tree for
-    /// no verification benefit — drift only ever needs the digest comparison
-    /// below.
-    digests: Vec<(String, [u8; 32])>,
-    pub(super) hash: String,
+/// Captured raw bytes and identity. Consent is deliberately absent here.
+/// Script content is discarded after folding; only labels and digests remain.
+#[derive(Debug)]
+pub(crate) struct PolicyIdentity {
+    pub(crate) config_path: PathBuf,
+    pub(crate) policy_bytes: Vec<u8>,
+    pub(crate) digests: Vec<(String, [u8; 32])>,
+    pub(crate) hash: String,
+    pub(crate) worktree: Option<(WorktreeScope, String)>,
 }
-
-impl ApprovedPolicy {
-    /// Verbatim bytes of the primary policy file that were hashed and approved.
-    pub fn policy_bytes(&self) -> &[u8] {
-        &self.policy_bytes
+impl PolicyIdentity {
+    pub(crate) fn verify_unchanged(&self) -> Result<()> {
+        self.verify_unchanged_until(None)
     }
 
-    /// Bytes of blob content (labels + digests) this snapshot retains. The
-    /// guarantee is structural — no script bytes are stored — and this exists
-    /// so a future change that reintroduces them is caught by a test.
-    #[cfg(test)]
-    fn retained_blob_bytes(&self) -> usize {
-        self.digests
-            .iter()
-            .map(|(label, digest)| label.len() + digest.len())
-            .sum()
-    }
-
-    /// Re-read the policy and every managed script and confirm they still hold
-    /// the exact approved bytes. Fails closed with the drifted entries named
-    /// so the caller can refuse to execute unapproved content.
-    pub fn verify_unchanged(&self) -> Result<()> {
-        let live = read_and_hash(&self.config_path)
-            .map_err(|e| anyhow::anyhow!("could not verify approved policy is unchanged: {e:#}"))?;
+    pub(crate) fn verify_unchanged_until(&self, until: Option<Instant>) -> Result<()> {
+        deadline::check(until)?;
+        // Verification needs the direct identity, not another Git scope lookup.
+        let bytes = script_files::read_policy(&self.config_path, until)
+            .context("could not verify approved policy is unchanged")?;
+        let live = fold_policy(self.config_path.clone(), bytes, None, until)
+            .context("could not verify approved policy is unchanged")?;
         if live.hash == self.hash {
             return Ok(());
         }
-        let mut drifted: Vec<String> = live
-            .digests
-            .iter()
-            .filter(|(label, digest)| {
-                self.digests
-                    .iter()
-                    .find(|(approved_label, _)| approved_label == label)
-                    .is_none_or(|(_, approved)| approved != digest)
-            })
-            .map(|(label, _)| format!("{} (modified or added)", display_label(label)))
-            .collect();
-        drifted.extend(
-            self.digests
-                .iter()
-                .filter(|(label, _)| {
-                    !live
-                        .digests
-                        .iter()
-                        .any(|(live_label, _)| live_label == label)
-                })
-                .map(|(label, _)| format!("{} (removed)", display_label(label))),
-        );
+        if live.policy_bytes != self.policy_bytes {
+            crate::config::parse_v1_bytes(&live.policy_bytes)
+                .context("could not verify approved policy is unchanged")?;
+        }
+        let drifted = drifted_entries(&self.digests, &live.digests);
         anyhow::bail!(
             "approved policy or managed scripts changed during evaluation ({}); \
              refusing to execute unapproved bytes — re-run `ironlint trust` to review and re-approve",
             drifted.join(", ")
         )
+    }
+}
+
+fn drifted_entries(approved: &[(String, [u8; 32])], live: &[(String, [u8; 32])]) -> Vec<String> {
+    let mut drifted = Vec::new();
+    let mut old = approved.iter().peekable();
+    let mut new = live.iter().peekable();
+    while old.peek().is_some() || new.peek().is_some() {
+        match (old.peek(), new.peek()) {
+            (Some(a), Some(b)) if a.0 == b.0 => {
+                if a.1 != b.1 {
+                    drifted.push(format!("{} (modified or added)", display_label(&b.0)));
+                }
+                old.next();
+                new.next();
+            }
+            (Some(a), Some(b)) if a.0 < b.0 => {
+                drifted.push(format!("{} (removed)", display_label(&a.0)));
+                old.next();
+            }
+            (_, Some(b)) => {
+                drifted.push(format!("{} (modified or added)", display_label(&b.0)));
+                new.next();
+            }
+            (Some(a), None) => {
+                drifted.push(format!("{} (removed)", display_label(&a.0)));
+                old.next();
+            }
+            (None, None) => break,
+        }
+    }
+    drifted
+}
+
+/// CLI consent wrapper, minted only by a successful trust decision. Library
+/// users can evaluate the neutral snapshot without constructing consent.
+#[derive(Debug)]
+pub struct ApprovedPolicy(Box<crate::policy::PolicySnapshot>);
+impl ApprovedPolicy {
+    pub(crate) fn new(snapshot: crate::policy::PolicySnapshot) -> Self {
+        Self(Box::new(snapshot))
+    }
+    pub fn snapshot(&self) -> &crate::policy::PolicySnapshot {
+        &self.0
+    }
+    pub fn policy_bytes(&self) -> &[u8] {
+        self.0.policy_bytes()
+    }
+    pub fn verify_unchanged(&self) -> Result<()> {
+        self.0.verify_unchanged()
     }
 }
 
@@ -228,157 +206,160 @@ fn blob_digest(bytes: &[u8]) -> [u8; 32] {
     digest
 }
 
-/// Fold `policy_bytes` (standing in for the content of `canonical_config`) and
-/// every managed script beside it into `hasher`, retaining one digest per
-/// blob. The single fold implementation behind [`read_and_hash`] and
-/// [`hash_policy_bytes`], so the path-based and byte-bound entry points can
-/// never disagree about labels, order, or framing.
-fn fold_policy(
-    hasher: &mut Sha256,
-    digests: &mut Vec<(String, [u8; 32])>,
-    canonical_config: &Path,
-    policy_bytes: &[u8],
-) -> Result<()> {
-    let label = format!("config\0{}", canonical_config.display());
-    hash_entry(hasher, &label, policy_bytes);
-    digests.push((label, blob_digest(policy_bytes)));
+/// Fold the direct and eligible worktree identities from the same blobs.
+struct PolicyFold {
+    direct: Sha256,
+    relative: Option<Sha256>,
+    digests: Vec<(String, [u8; 32])>,
+}
+impl PolicyFold {
+    fn add(&mut self, label: String, relative_label: Option<String>, bytes: &[u8]) {
+        hash_entry(&mut self.direct, &label, bytes);
+        if let (Some(hasher), Some(label)) = (&mut self.relative, relative_label) {
+            hash_entry(hasher, &label, bytes);
+        }
+        self.digests.push((label, blob_digest(bytes)));
+    }
 
-    for scripts_dir in policy_script_dirs(&[canonical_config.to_path_buf()]) {
-        match classify_entry(&scripts_dir)? {
-            EntryKind::Dir => {
-                for (rel, bytes) in collect_gate_files(&scripts_dir)? {
-                    let label = format!("scripts\0{}\0{rel}", scripts_dir.display());
-                    hash_entry(hasher, &label, &bytes);
-                    digests.push((label, blob_digest(&bytes)));
-                }
+    fn add_file(
+        &mut self,
+        label: String,
+        relative_label: Option<String>,
+        file: &ScriptFile,
+        until: Option<Instant>,
+    ) -> Result<()> {
+        hash_prefix(&mut self.direct, &label, file.len());
+        let mut relative = self.relative.as_mut().zip(relative_label);
+        if let Some((hasher, label)) = &mut relative {
+            hash_prefix(hasher, label, file.len());
+        }
+        let digest = script_files::stream(file, until, |chunk| {
+            self.direct.update(chunk);
+            if let Some((hasher, _)) = &mut relative {
+                hasher.update(chunk);
             }
-            EntryKind::Missing => {}
-            EntryKind::File => {
-                anyhow::bail!(
-                    "expected {} to be a directory (scripts dir)",
-                    scripts_dir.display()
-                );
+        })?;
+        self.digests.push((label, digest));
+        Ok(())
+    }
+}
+
+fn fold_policy(
+    canonical: PathBuf,
+    policy_bytes: Vec<u8>,
+    scope: Option<WorktreeScope>,
+    until: Option<Instant>,
+) -> Result<PolicyIdentity> {
+    deadline::check(until)?;
+    let script_dirs = policy_script_dirs(std::slice::from_ref(&canonical));
+    let scope = scope.filter(|scope| {
+        canonical.starts_with(&scope.worktree_root)
+            && script_dirs
+                .iter()
+                .all(|dir| dir.starts_with(&scope.worktree_root))
+    });
+    let mut fold = PolicyFold {
+        direct: Sha256::new(),
+        relative: scope.as_ref().map(|_| Sha256::new()),
+        digests: Vec::new(),
+    };
+    let relative_label = scope
+        .as_ref()
+        .map(|s| worktree_rel(&canonical, &s.worktree_root).map(|rel| format!("config\0{rel}")))
+        .transpose()?;
+    fold.add(
+        format!("config\0{}", canonical.display()),
+        relative_label,
+        &policy_bytes,
+    );
+    for dir in script_dirs {
+        fold_scripts(&mut fold, &dir, scope.as_ref(), until)?;
+    }
+    let worktree = scope
+        .zip(fold.relative)
+        .map(|(scope, hasher)| (scope, sha256_digest_hex(&hasher.finalize())));
+    Ok(PolicyIdentity {
+        config_path: canonical,
+        policy_bytes,
+        digests: fold.digests,
+        hash: sha256_digest_hex(&fold.direct.finalize()),
+        worktree,
+    })
+}
+
+fn fold_scripts(
+    fold: &mut PolicyFold,
+    dir: &Path,
+    scope: Option<&WorktreeScope>,
+    until: Option<Instant>,
+) -> Result<()> {
+    deadline::check(until)?;
+    match classify_entry(dir)? {
+        EntryKind::Dir => {
+            let dir_rel = scope
+                .map(|s| worktree_rel(dir, &s.worktree_root))
+                .transpose()?;
+            let files = script_files::collect(dir, until)?;
+            for file in &files {
+                fold.add_file(
+                    format!("scripts\0{}\0{}", dir.display(), file.rel),
+                    dir_rel
+                        .as_ref()
+                        .map(|dir| format!("scripts\0{dir}\0{}", file.rel)),
+                    file,
+                    until,
+                )?;
             }
+            if files != script_files::collect(dir, until)? {
+                anyhow::bail!("scripts changed during verification ({})", dir.display());
+            }
+        }
+        EntryKind::Missing => {}
+        EntryKind::File => {
+            anyhow::bail!("expected {} to be a directory (scripts dir)", dir.display())
         }
     }
     Ok(())
 }
 
-/// Read the policy and every managed script once, fold them into the trust
-/// hash, and keep the exact policy bytes the hash covers. Every path-based
-/// hash consumer goes through here so the approved bytes can never disagree
-/// with the digest.
-pub(super) fn read_and_hash(config_path: &Path) -> Result<ApprovedPolicy> {
-    let config_paths = config_paths(config_path)?;
-    let canonical = config_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| config_path.to_path_buf());
-    let policy_bytes =
-        std::fs::read(&canonical).with_context(|| format!("reading {}", canonical.display()))?;
-
-    let mut hasher = Sha256::new();
-    let mut digests: Vec<(String, [u8; 32])> = Vec::new();
-    fold_policy(&mut hasher, &mut digests, &canonical, &policy_bytes)?;
-
-    Ok(ApprovedPolicy {
-        config_path: canonical,
-        policy_bytes,
-        digests,
-        hash: sha256_digest_hex(&hasher.finalize()),
-    })
-}
-
-/// Trust-hash `policy_bytes` **as the content of** `config_path`, plus every
-/// managed script beside it.
-///
-/// Byte-bound sibling of [`compute_hash`]: callers that already hold the exact
-/// policy bytes — `ironlint init`, which has just classified or written them —
-/// hash those bytes instead of re-reading the path, so consent can never cover
-/// content the caller did not classify. Framing is shared with the path-based
-/// fold, so identical bytes produce an identical digest either way.
-pub(super) fn hash_policy_bytes(config_path: &Path, policy_bytes: &[u8]) -> Result<String> {
-    crate::config::v1::parse_v1_bytes(policy_bytes)
-        .with_context(|| format!("validating v1 policy {}", config_path.display()))?;
-    let canonical = config_path
+pub(crate) fn read_policy(path: &Path) -> Result<(PathBuf, Vec<u8>)> {
+    let canonical = path
         .canonicalize()
-        .with_context(|| format!("canonicalizing {}", config_path.display()))?;
-
-    let mut hasher = Sha256::new();
-    let mut digests: Vec<(String, [u8; 32])> = Vec::new();
-    fold_policy(&mut hasher, &mut digests, &canonical, policy_bytes)?;
-    Ok(sha256_digest_hex(&hasher.finalize()))
+        .with_context(|| format!("canonicalizing {}", path.display()))?;
+    let bytes =
+        std::fs::read(&canonical).with_context(|| format!("reading {}", canonical.display()))?;
+    Ok((canonical, bytes))
 }
 
-/// Compute the trust hash of a v1 policy and its managed scripts.
-///
-/// Every blob is folded with [`hash_entry`]'s
-/// length-prefixed framing and a label bound to the blob's identity (its
-/// canonical config path, or its scripts dir + relative path), so neither
-/// reordering nor relabeling can produce a collision. Path-reading sibling of
-/// [`hash_policy_bytes`], which hashes caller-supplied bytes instead.
-pub fn compute_hash(config_path: &Path) -> Result<String> {
-    Ok(read_and_hash(config_path)?.hash)
+pub(crate) fn capture_identity(canonical: PathBuf, bytes: Vec<u8>) -> Result<PolicyIdentity> {
+    let scope = WorktreeScope::discover(&canonical);
+    fold_policy(canonical, bytes, scope, None)
 }
 
-/// Compute the worktree-relative policy hash for `config_path` under `scope`.
-///
-/// Reuses the same `.ironlint/scripts/` enumeration, symlink refusal,
-/// sorting, and `hash_entry` framing as
-/// [`compute_hash`] — the only semantic difference is the labels, which use
-/// worktree-root-relative paths so the digest is stable across linked
-/// worktrees. Any config or scripts dir that escapes `scope.worktree_root`
-/// makes the policy ineligible (`Ok(None)`) rather than silently omitting a
-/// file.
-pub(super) fn compute_worktree_hash(
-    config_path: &Path,
-    scope: &WorktreeScope,
-) -> Result<Option<String>> {
-    let config_paths = config_paths(config_path)?;
-    if !all_under_root(&config_paths, &scope.worktree_root) {
-        return Ok(None);
-    }
-    let mut hasher = Sha256::new();
-    for path in &config_paths {
-        let rel = worktree_rel(path, &scope.worktree_root)?;
-        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        hash_entry(&mut hasher, &format!("config\0{rel}"), &bytes);
-    }
-    let script_dirs = policy_script_dirs(&config_paths);
-    if !all_under_root(&script_dirs, &scope.worktree_root) {
-        return Ok(None);
-    }
-    for scripts_dir in &script_dirs {
-        match classify_entry(scripts_dir)? {
-            EntryKind::Dir => {
-                let dir_rel = worktree_rel(scripts_dir, &scope.worktree_root)?;
-                for (rel, bytes) in collect_gate_files(scripts_dir)? {
-                    hash_entry(&mut hasher, &format!("scripts\0{dir_rel}\0{rel}"), &bytes);
-                }
-            }
-            EntryKind::Missing => {}
-            EntryKind::File => {
-                anyhow::bail!(
-                    "expected {} to be a directory (scripts dir)",
-                    scripts_dir.display()
-                );
-            }
-        }
-    }
-    Ok(Some(sha256_digest_hex(&hasher.finalize())))
+#[cfg(test)]
+fn read_and_hash(config_path: &Path) -> Result<crate::policy::PolicySnapshot> {
+    crate::policy::PolicySnapshot::load(config_path)
 }
 
-pub(super) fn config_paths(config_path: &Path) -> Result<Vec<PathBuf>> {
-    crate::config::v1::parse_v1_file(config_path)
-        .with_context(|| format!("validating v1 policy {}", config_path.display()))?;
-    Ok(vec![config_path.canonicalize().with_context(|| {
-        format!("canonicalizing {}", config_path.display())
-    })?])
+#[cfg(test)]
+fn hash_policy_bytes(path: &Path, bytes: &[u8]) -> Result<String> {
+    Ok(crate::policy::PolicySnapshot::from_bytes(path, bytes)?
+        .hash()
+        .to_owned())
 }
 
-/// True iff every path in `paths` is under `root` (after canonicalization).
-fn all_under_root(paths: &[PathBuf], root: &Path) -> bool {
-    paths.iter().all(|p| p.strip_prefix(root).is_ok())
+/// Compute the direct hash, validating the exact policy bytes that are folded.
+pub fn compute_hash(path: &Path) -> Result<String> {
+    Ok(crate::policy::PolicySnapshot::load(path)?.hash().to_owned())
+}
+
+#[cfg(test)]
+pub(super) fn compute_worktree_hash(path: &Path, scope: &WorktreeScope) -> Result<Option<String>> {
+    let canonical = path.canonicalize()?;
+    let bytes = std::fs::read(&canonical)?;
+    crate::config::parse_v1_bytes(&bytes)?;
+    let identity = fold_policy(canonical, bytes, Some(scope.clone()), None)?;
+    Ok(identity.worktree.map(|(_, hash)| hash))
 }
 
 /// `canon` relative to `root`, `/`-separated. `Err` if not under `root`.

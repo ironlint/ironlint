@@ -148,6 +148,78 @@ fn retained_inspection_commands_accept_untrusted_v1_policy() {
         .find(|check| check["name"] == "parses")
         .unwrap();
     assert_eq!(parses["status"], "pass");
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .args(["validate", "--config", config.to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .arg("schema")
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_dir(home.path()).unwrap().count(),
+        0,
+        "inspection must create no consent store or other files"
+    );
+}
+
+#[test]
+fn explanation_and_public_selection_agree_for_known_paths() {
+    use ironlint_core::config::{parse_v1_str, V1Event};
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let config = dir.path().join(".ironlint.yml");
+    let policy = "version: 1\nchecks:\n  accept_only: {run: 'true'}\n  bare: {files: '*.rs', on: [change, accept], run: 'true'}\n  nested: {files: 'src/**', on: [change, accept], run: 'true'}\n  unconditional: {on: [change, accept], run: 'true'}\n";
+    fs::write(&config, policy).unwrap();
+    let model = parse_v1_str(policy).unwrap();
+    for file in ["src/a.rs", "deep/a.rs", "README.md", "src/a.c"] {
+        let output = Command::cargo_bin("ironlint")
+            .unwrap()
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path().join(".config"))
+            .args([
+                "explain",
+                file,
+                "--root",
+                dir.path().to_str().unwrap(),
+                "--config",
+                config.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let explanation: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let explained: Vec<_> = explanation
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["change"] == "match")
+            .map(|entry| entry["check"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            explained,
+            model.selected_ids(V1Event::Change, Some(&[file.into()]))
+        );
+        assert!(explanation
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["acceptance"] == "required"));
+    }
+    assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
 }
 
 #[test]

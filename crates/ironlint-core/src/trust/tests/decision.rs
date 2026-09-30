@@ -1,4 +1,7 @@
 use super::*;
+use crate::trust::policy_hash::compute_worktree_hash;
+use crate::trust::store::canonical_key;
+use crate::trust::worktree::WorktreeScope;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -149,7 +152,7 @@ fn bless_recovers_from_corrupt_store() {
     bless_in(&cfg, &store_path, "t").unwrap();
 
     let store = read_store(&store_path).unwrap();
-    let key = canonical_key(&cfg).unwrap();
+    let key = canonical_key(&cfg.canonicalize().unwrap());
     assert!(
         store.entries.contains_key(&key),
         "bless must recover from a corrupt store and record the new entry"
@@ -296,7 +299,7 @@ fn direct_miss_with_matching_worktree_entry_is_trusted() {
     // Synthesize a "sibling" by removing the direct entry but KEEPING the
     // worktree entry — simulates a linked worktree with its own canonical path.
     let mut s = read_store(&store_path).unwrap();
-    let key = canonical_key(&cfg).unwrap();
+    let key = canonical_key(&cfg.canonicalize().unwrap());
     s.entries.remove(&key);
     write_store(&store_path, &s).unwrap();
     // Direct miss, worktree hit:
@@ -345,7 +348,7 @@ fn check_never_writes_store_on_inherited_trust() {
     bless_in(&cfg, &store_path, "t").unwrap();
     // Force a direct miss + worktree hit (remove direct entry):
     let mut s = read_store(&store_path).unwrap();
-    let key = canonical_key(&cfg).unwrap();
+    let key = canonical_key(&cfg.canonicalize().unwrap());
     s.entries.remove(&key);
     write_store(&store_path, &s).unwrap();
     // Baseline after setup; check must not mutate the store.
@@ -381,6 +384,51 @@ fn bless_bytes_binds_consent_to_the_supplied_bytes_not_a_later_rewrite() {
     }
 }
 
+#[test]
+fn bless_bytes_never_approves_a_later_live_policy_through_worktree_inheritance() {
+    let dir = tempfile::tempdir().unwrap();
+    // Worktree discovery is filesystem-only; no Git process or live config is
+    // required to model the primary worktree metadata.
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    let cfg = dir.path().join(".ironlint.yml");
+    let approved = b"version: 1\nchecks:\n  approved: {run: 'true'}\n";
+    let replacement = b"version: 1\nchecks:\n  replacement: {run: 'true'}\n";
+    fs::write(&cfg, replacement).unwrap();
+    let store = dir.path().join("trust.json");
+    bless_bytes_in(&cfg, approved, &store, "t").unwrap();
+    match check_trust_in(&cfg, &store) {
+        TrustOutcome::Untrusted(_) => {}
+        TrustOutcome::Trusted(_) => {
+            panic!("worktree fallback approved bytes the caller never supplied")
+        }
+        TrustOutcome::Unverifiable(error) => panic!("replacement should be verifiable: {error:#}"),
+    }
+    fs::write(&cfg, approved).unwrap();
+    assert!(matches!(
+        check_trust_in(&cfg, &store),
+        TrustOutcome::Trusted(_)
+    ));
+}
+
+#[test]
+fn inherited_lookup_uses_captured_identity_and_evaluation_still_detects_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    let config = dir.path().join(".ironlint.yml");
+    let store_path = dir.path().join("trust.json");
+    let original = b"version: 1\nchecks:\n  original: {run: 'true'}\n";
+    fs::write(&config, original).unwrap();
+    bless_in(&config, &store_path, "t").unwrap();
+    let captured = PolicySnapshot::load(&config).unwrap();
+    let store = read_store(&store_path).unwrap();
+    fs::write(&config, "version: 1\nchecks:\n  changed: {run: 'true'}\n").unwrap();
+    assert!(inherited_trusted(&captured, &store));
+    assert_eq!(captured.policy_bytes(), original);
+    assert!(captured.verify_unchanged().is_err());
+    let replacement = PolicySnapshot::load(&config).unwrap();
+    assert!(!inherited_trusted(&replacement, &store));
+}
+
 /// The two bless entry points must record the same digest for identical
 /// content, so a policy blessed by `init` verifies under the path-based hash.
 #[test]
@@ -394,7 +442,7 @@ fn bless_bytes_and_bless_record_the_same_hash() {
     bless_bytes_in(&cfg, &bytes, &byte_store, "t").unwrap();
     bless_in(&cfg, &path_store, "t").unwrap();
 
-    let key = canonical_key(&cfg).unwrap();
+    let key = canonical_key(&cfg.canonicalize().unwrap());
     let byte_hash = read_store(&byte_store).unwrap().entries[&key].hash.clone();
     let path_hash = read_store(&path_store).unwrap().entries[&key].hash.clone();
     assert_eq!(byte_hash, path_hash);

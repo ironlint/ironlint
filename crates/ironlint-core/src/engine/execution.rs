@@ -1,8 +1,6 @@
 //! The bounded command executor used by the versioned v1 evaluator.
 //!
-//! This intentionally remains separate from [`super::gate`]. The legacy path
-//! feeds proposed content and exposes its per-file ABI; v1 reads the tree,
-//! closes stdin, and exposes only its three reserved variables.
+//! v1 reads the tree, closes stdin, and exposes its three reserved variables.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -41,6 +39,7 @@ pub(crate) enum V1ExecutionError {
     NotExecutable,
     Timeout,
     DeadlineOverflow,
+    TotalTimeoutBeforeSpawn,
     Signal(i32),
     HighExit(i32),
     Spawn(String),
@@ -65,7 +64,8 @@ struct CapturedOutput {
 /// Run one v1 command. `total_budget` is the caller's remaining invocation
 /// budget; the caller should pass the remaining budget for each serial check.
 /// The effective deadline is the smaller of that budget and `check_timeout`.
-pub(crate) fn run_v1(
+#[cfg(test)]
+fn run_v1(
     run: &str,
     env: &V1ExecutionEnv<'_>,
     check_timeout: Duration,
@@ -81,6 +81,26 @@ pub(crate) fn run_v1(
             false,
         );
     };
+    run_v1_until(run, env, check_timeout, deadline)
+}
+
+/// Run under the caller's unchanged absolute invocation deadline.
+pub(crate) fn run_v1_until(
+    run: &str,
+    env: &V1ExecutionEnv<'_>,
+    check_timeout: Duration,
+    total_deadline: Instant,
+) -> V1ExecutionResult {
+    if Instant::now() >= total_deadline {
+        return result(
+            V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn),
+            None,
+            &[],
+            &[],
+            false,
+            false,
+        );
+    }
     let mut command = Command::new("sh");
     command
         .arg("-c")
@@ -97,6 +117,29 @@ pub(crate) fn run_v1(
         command.process_group(0);
     }
 
+    let now = Instant::now();
+    if now >= total_deadline {
+        return result(
+            V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn),
+            None,
+            &[],
+            &[],
+            false,
+            false,
+        );
+    }
+    let Some(deadline) =
+        now.checked_add(check_timeout.min(total_deadline.saturating_duration_since(now)))
+    else {
+        return result(
+            V1ExecutionOutcome::Error(V1ExecutionError::DeadlineOverflow),
+            None,
+            &[],
+            &[],
+            false,
+            false,
+        );
+    };
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -205,12 +248,12 @@ fn spawn_drain(
     std::thread::spawn(move || {
         let mut chunk = [0u8; READ_CHUNK];
         loop {
+            if !draining.load(Ordering::Relaxed) {
+                break;
+            }
             let read = match pipe.read(&mut chunk) {
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if !draining.load(Ordering::Relaxed) {
-                        break;
-                    }
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
@@ -237,13 +280,13 @@ fn wait_for_drain(
     deadline: Instant,
     draining: &AtomicBool,
 ) {
-    let stdout_done = recv_until(stdout, deadline);
-    let stderr_done = recv_until(stderr, deadline);
+    let grace_deadline = deadline + DRAIN_GRACE;
+    let stdout_done = recv_until(stdout, grace_deadline);
+    let stderr_done = recv_until(stderr, grace_deadline);
     if stdout_done && stderr_done {
         return;
     }
     draining.store(false, Ordering::Relaxed);
-    let grace_deadline = Instant::now() + DRAIN_GRACE;
     if !stdout_done {
         let _ = recv_until(stdout, grace_deadline);
     }
@@ -360,6 +403,54 @@ fn reap_child(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn d5_continuous_output_observes_drain_cancellation_every_iteration() {
+        struct Continuous {
+            reads: Arc<std::sync::atomic::AtomicUsize>,
+            draining: Arc<AtomicBool>,
+        }
+        impl Read for Continuous {
+            fn read(&mut self, chunk: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.reads.fetch_add(1, Ordering::Relaxed);
+                self.draining.store(false, Ordering::Relaxed);
+                if n == 4096 {
+                    return Ok(0);
+                }
+                chunk[0] = b'x';
+                Ok(1)
+            }
+        }
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let draining = Arc::new(AtomicBool::new(true));
+        let pipe = Continuous {
+            reads: reads.clone(),
+            draining: draining.clone(),
+        };
+        let done = spawn_drain(
+            pipe,
+            Arc::new(Mutex::new(CapturedOutput::default())),
+            draining,
+        );
+        done.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn d5_expired_absolute_deadline_never_spawns() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = run_v1_until(
+            "touch marker",
+            &env(dir.path(), "accept"),
+            Duration::from_secs(30),
+            Instant::now(),
+        );
+        assert_eq!(
+            output.outcome,
+            V1ExecutionOutcome::Error(V1ExecutionError::TotalTimeoutBeforeSpawn)
+        );
+        assert!(!dir.path().join("marker").exists());
+    }
 
     fn env<'a>(root: &'a Path, event: &'a str) -> V1ExecutionEnv<'a> {
         V1ExecutionEnv {

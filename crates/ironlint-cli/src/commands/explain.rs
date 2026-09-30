@@ -1,10 +1,8 @@
 //! `ironlint explain <file>` — read-only check applicability report.
 //!
-//! For each check in the resolved config (BTreeMap id order), reports whether
-//! the check's file globs apply to the given path (`match`) or not (`skip`).
-//! `human` (default) prints one line per check
-//! `<check-id>  <match|skip>  files=<globs>  run=<run>`; `json` prints an array
-//! of `{ check, status, files, run }` objects. No check logic is executed.
+//! For each check in ID order, reports required acceptance, change applicability,
+//! file scopes, command, and configured timeout. Human output prints one line
+//! per check; JSON prints the same fields as an array. No commands execute.
 //! Errors go to stderr; exit 1.
 
 use crate::cli::OutputFormat;
@@ -19,6 +17,8 @@ struct V1ExplainEntry<'a> {
     change: &'static str,
     files: &'a [String],
     run: &'a str,
+    timeout_secs: Option<u64>,
+    effective_timeout_secs: u64,
 }
 
 pub fn run(file: &Path, format: OutputFormat, config: &Path, root: Option<&Path>) -> Result<i32> {
@@ -30,7 +30,7 @@ pub fn run(file: &Path, format: OutputFormat, config: &Path, root: Option<&Path>
         }
     };
     let v1 = match crate::commands::config::load_read_only_with_path(&config) {
-        Ok((_config_path, crate::commands::config::ReadOnlyConfig::V1(v1))) => v1,
+        Ok((_config_path, v1)) => v1,
         Err(e) => {
             eprintln!("error: {:#}", e);
             return Ok(1);
@@ -61,48 +61,42 @@ pub fn run(file: &Path, format: OutputFormat, config: &Path, root: Option<&Path>
     Ok(0)
 }
 
-fn v1_change_status(
-    check: &crate::commands::config::V1InspectionCheck,
-    file: &Path,
-) -> &'static str {
-    if !check.on.iter().any(|event| event == "change") {
-        return "not-enabled";
+fn v1_change_status(check: &ironlint_core::config::V1Check, file: &Path) -> &'static str {
+    use ironlint_core::config::{SelectionDecision, V1Event};
+    match check.selection(V1Event::Change, Some(&[file.to_path_buf()])) {
+        SelectionDecision::ChangeDisabled => "not-enabled",
+        decision if decision.is_selected() => "match",
+        _ => "skip",
     }
-    let Some(globs) = &check.files else {
-        return "match";
-    };
-    ironlint_core::config::scope::ScopeMatcher::new(globs)
-        .map(|matcher| {
-            if matcher.matches(file) {
-                "match"
-            } else {
-                "skip"
-            }
-        })
-        .unwrap_or("skip")
 }
 
-fn print_v1_human(config: &crate::commands::config::V1InspectionConfig, file: &Path) {
-    for (id, check) in &config.checks {
-        let files = check.files.as_deref().unwrap_or_default().join(",");
+fn print_v1_human(config: &ironlint_core::config::V1Config, file: &Path) {
+    for (id, check) in config.checks() {
+        let files = check.files().unwrap_or_default().join(",");
+        let timeout = check
+            .timeout_secs()
+            .map_or_else(|| "default".to_owned(), |timeout| timeout.to_string());
         println!(
-            "{id}  acceptance=required  change={}  files={files}  run={}",
+            "{id}  acceptance=required  change={}  files={files}  run={}  timeout_secs={timeout} effective_timeout_secs={}",
             v1_change_status(check, file),
-            check.run
+            check.run(),
+            check.effective_timeout_secs(config.execution())
         );
     }
 }
 
-fn print_v1_json(config: &crate::commands::config::V1InspectionConfig, file: &Path) -> Result<()> {
+fn print_v1_json(config: &ironlint_core::config::V1Config, file: &Path) -> Result<()> {
     let entries: Vec<V1ExplainEntry<'_>> = config
-        .checks
+        .checks()
         .iter()
         .map(|(id, check)| V1ExplainEntry {
             check: id,
             acceptance: "required",
             change: v1_change_status(check, file),
-            files: check.files.as_deref().unwrap_or_default(),
-            run: &check.run,
+            files: check.files().unwrap_or_default(),
+            run: check.run(),
+            timeout_secs: check.timeout_secs(),
+            effective_timeout_secs: check.effective_timeout_secs(config.execution()),
         })
         .collect();
     println!("{}", serde_json::to_string_pretty(&entries)?);

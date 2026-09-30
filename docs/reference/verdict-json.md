@@ -42,6 +42,12 @@ check violated policy. Otherwise a violation makes `violation`; completed
 all-pass results make `pass`. An empty change selection is `not_run` and can
 still exit 0.
 
+Invocation deadline exhaustion uses `total_timeout` for the top-level error and
+remaining selected checks. If final verification expires after all commands
+finish, the completed results remain and `not_run` is empty, but the aggregate
+is `error`. A per-check command timeout remains an execution error. Optional
+check timeout overrides do not change schema 7.
+
 | CLI exit | Meaning |
 | --- | --- |
 | 0 | Evaluation completed, including empty `change` selection. |

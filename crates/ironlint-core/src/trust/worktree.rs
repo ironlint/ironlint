@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone)]
 pub(crate) struct WorktreeScope {
     /// Canonical absolute path of the Git *common* directory (the primary
     /// worktree's `.git` dir, shared by every linked worktree).

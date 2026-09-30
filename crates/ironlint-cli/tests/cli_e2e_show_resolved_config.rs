@@ -2,7 +2,7 @@
 //!
 //! Default output format (from show_resolved_config.rs) is TSV — one
 //! tab-separated row per check:
-//!   check_id<TAB>origin<TAB>files(comma-joined)<TAB>run
+//!   check_id<TAB>origin<TAB>files(comma-joined)<TAB>run<TAB>timeout_secs<TAB>effective_timeout_secs
 
 use assert_cmd::Command;
 use tempfile::tempdir;
@@ -34,8 +34,8 @@ fn show_resolved_config_default_tsv_row_per_check() {
     let cols: Vec<&str> = line.split('\t').collect();
     assert_eq!(
         cols.len(),
-        4,
-        "TSV row must be 4 tab-separated columns: {line:?}"
+        6,
+        "TSV row must be 6 tab-separated columns: {line:?}"
     );
     assert_eq!(cols[0], "no-todo", "col 1 is the check id");
     assert!(

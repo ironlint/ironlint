@@ -91,6 +91,46 @@ fn validate_rejects_unknown_check_field() {
 }
 
 #[test]
+fn validate_rejects_misspelled_execution_deadlines_without_consent_io() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let config = dir.path().join(".ironlint.yml");
+    for field in ["timeout_sec", "total_timeout_sec"] {
+        std::fs::write(
+            &config,
+            format!("version: 1\nexecution: {{{field}: 1}}\nchecks:\n  ok: {{run: 'true'}}\n"),
+        )
+        .unwrap();
+        for format in ["human", "json"] {
+            let output = Command::cargo_bin("ironlint")
+                .unwrap()
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join(".config"))
+                .args([
+                    "validate",
+                    "--config",
+                    config.to_str().unwrap(),
+                    "--format",
+                    format,
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            let detail = if format == "json" {
+                let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(report["status"], "error");
+                report["reason"].as_str().unwrap().to_owned()
+            } else {
+                String::from_utf8_lossy(&output.stderr).into_owned()
+            };
+            assert!(detail.contains("unknown field"), "{detail}");
+            assert!(detail.contains(field), "{detail}");
+        }
+    }
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn validate_rejects_run_with_no_executable_content() {
     // A `run:` that collapses to a single `#` comment (the folded-YAML-scalar
     // footgun) is a check that silently passes everything. validate must reject

@@ -1,4 +1,5 @@
 use super::*;
+use crate::trust::compute_hash;
 use std::fs;
 use std::path::Path;
 use std::process::Command;

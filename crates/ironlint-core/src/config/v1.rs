@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -8,23 +8,183 @@ use super::scope::ScopeMatcher;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_TOTAL_TIMEOUT_SECS: u64 = 300;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum V1Event {
+pub enum V1Event {
     Change,
     Accept,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct V1Execution {
-    #[serde(default = "default_timeout_secs")]
-    pub(crate) timeout_secs: u64,
-    #[serde(default = "default_total_timeout_secs")]
-    pub(crate) total_timeout_secs: u64,
+impl V1Event {
+    pub fn parse(event: &str) -> Result<Self> {
+        match event {
+            "change" => Ok(Self::Change),
+            "accept" => Ok(Self::Accept),
+            _ => Err(anyhow!(
+                "invalid v1 event `{event}`; expected `change` or `accept`"
+            )),
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Change => "change",
+            Self::Accept => "accept",
+        }
+    }
 }
 
-impl Default for V1Execution {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct V1Execution {
+    timeout_secs: u64,
+    total_timeout_secs: u64,
+}
+impl V1Execution {
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+    pub fn total_timeout_secs(&self) -> u64 {
+        self.total_timeout_secs
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct V1Check {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files: Option<Vec<String>>,
+    on: Vec<V1Event>,
+    run: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_secs: Option<u64>,
+    #[serde(skip)]
+    matcher: Option<ScopeMatcher>,
+}
+impl V1Check {
+    pub fn files(&self) -> Option<&[String]> {
+        self.files.as_deref()
+    }
+    pub fn on(&self) -> &[V1Event] {
+        &self.on
+    }
+    pub fn run(&self) -> &str {
+        &self.run
+    }
+    /// Explicit command timeout override; `None` inherits the global default.
+    pub fn timeout_secs(&self) -> Option<u64> {
+        self.timeout_secs
+    }
+    /// Configured command budget before the remaining total deadline caps it.
+    pub fn effective_timeout_secs(&self, execution: &V1Execution) -> u64 {
+        self.timeout_secs.unwrap_or(execution.timeout_secs())
+    }
+    pub fn selection(&self, event: V1Event, paths: Option<&[PathBuf]>) -> SelectionDecision {
+        if event == V1Event::Accept {
+            return SelectionDecision::Acceptance;
+        }
+        if !self.on.contains(&V1Event::Change) {
+            return SelectionDecision::ChangeDisabled;
+        }
+        match (&self.matcher, paths) {
+            (None, _) => SelectionDecision::Unscoped,
+            (_, None) => SelectionDecision::UnknownPaths,
+            (Some(_), Some([])) => SelectionDecision::EmptyPaths,
+            (Some(matcher), Some(paths)) => {
+                if paths.iter().any(|path| matcher.matches(path)) {
+                    SelectionDecision::Matched
+                } else {
+                    SelectionDecision::Unmatched
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionDecision {
+    Acceptance,
+    ChangeDisabled,
+    Unscoped,
+    UnknownPaths,
+    EmptyPaths,
+    Matched,
+    Unmatched,
+}
+impl SelectionDecision {
+    pub fn is_selected(self) -> bool {
+        matches!(
+            self,
+            Self::Acceptance | Self::Unscoped | Self::UnknownPaths | Self::Matched
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionRow<'a> {
+    id: &'a str,
+    decision: SelectionDecision,
+}
+impl<'a> SelectionRow<'a> {
+    pub fn id(self) -> &'a str {
+        self.id
+    }
+    pub fn decision(self) -> SelectionDecision {
+        self.decision
+    }
+}
+
+/// A validated v1 policy. Construction compiles scopes once; fields cannot be
+/// mutated or deserialized independently of validation.
+///
+/// ```compile_fail
+/// let policy: ironlint_core::config::V1Config = serde_yaml::from_str("version: 1").unwrap();
+/// ```
+///
+/// ```compile_fail
+/// let mut policy = ironlint_core::config::parse_v1_str("version: 1\nchecks:\n  ok: {run: 'true'}\n").unwrap();
+/// policy.checks.clear();
+/// ```
+#[derive(Debug, Clone, Serialize)]
+pub struct V1Config {
+    version: u8,
+    execution: V1Execution,
+    checks: BTreeMap<String, V1Check>,
+}
+impl V1Config {
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+    pub fn execution(&self) -> &V1Execution {
+        &self.execution
+    }
+    pub fn checks(&self) -> &BTreeMap<String, V1Check> {
+        &self.checks
+    }
+    pub fn selection(&self, event: V1Event, paths: Option<&[PathBuf]>) -> Vec<SelectionRow<'_>> {
+        self.checks
+            .iter()
+            .map(|(id, check)| SelectionRow {
+                id,
+                decision: check.selection(event, paths),
+            })
+            .collect()
+    }
+    pub fn selected_ids(&self, event: V1Event, paths: Option<&[PathBuf]>) -> Vec<&str> {
+        self.selection(event, paths)
+            .into_iter()
+            .filter(|row| row.decision.is_selected())
+            .map(|row| row.id)
+            .collect()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExecution {
+    #[serde(default = "default_timeout_secs")]
+    timeout_secs: u64,
+    #[serde(default = "default_total_timeout_secs")]
+    total_timeout_secs: u64,
+}
+impl Default for RawExecution {
     fn default() -> Self {
         Self {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
@@ -32,87 +192,65 @@ impl Default for V1Execution {
         }
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct V1Check {
+struct RawCheck {
     #[serde(default, deserialize_with = "deserialize_files")]
-    pub(crate) files: Option<Vec<String>>,
+    files: Option<Vec<String>>,
     #[serde(default = "default_events")]
-    pub(crate) on: Vec<V1Event>,
-    pub(crate) run: String,
+    on: Vec<V1Event>,
+    run: String,
+    #[serde(default, deserialize_with = "deserialize_timeout_secs")]
+    timeout_secs: Option<u64>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct V1Config {
-    pub(crate) version: u8,
+struct RawConfig {
+    version: u8,
     #[serde(default)]
-    pub(crate) execution: V1Execution,
+    execution: RawExecution,
     #[serde(deserialize_with = "deserialize_checks")]
-    pub(crate) checks: BTreeMap<String, V1Check>,
+    checks: BTreeMap<String, RawCheck>,
 }
 
-impl V1Config {
-    pub(crate) fn selected_ids(
-        &self,
-        event: V1Event,
-        changed_paths: Option<&[PathBuf]>,
-    ) -> Vec<&str> {
-        self.checks
-            .iter()
-            .filter(|(_, check)| selects(check, event, changed_paths))
-            .map(|(id, _)| id.as_str())
-            .collect()
-    }
-}
-
-fn selects(check: &V1Check, event: V1Event, changed_paths: Option<&[PathBuf]>) -> bool {
-    if event == V1Event::Accept {
-        return true;
-    }
-    if !check.on.contains(&V1Event::Change) {
-        return false;
-    }
-    match (check.files.as_deref(), changed_paths) {
-        (None, _) | (_, None) => true,
-        (Some(_), Some([])) => false,
-        (Some(globs), Some(paths)) => ScopeMatcher::new(globs)
-            .map(|matcher| paths.iter().any(|path| matcher.matches(path)))
-            .unwrap_or(false),
-    }
-}
-
-pub(crate) fn parse_v1_str(input: &str) -> Result<V1Config> {
+pub fn parse_v1_str(input: &str) -> Result<V1Config> {
     let value =
         serde_yaml::from_str::<serde_yaml::Value>(input).context("parsing v1 config mappings")?;
     if !value
         .as_mapping()
         .is_some_and(|mapping| mapping.contains_key(serde_yaml::Value::String("version".into())))
     {
-        return Err(anyhow!(
-            "unsupported unversioned config; add `version: 1` and use the v1 format shown by `ironlint schema`"
-        ));
+        return Err(anyhow!("unsupported unversioned config; add `version: 1` and use the v1 format shown by `ironlint schema`"));
     }
-    let config: V1Config = serde_yaml::from_str(input).context("parsing v1 config")?;
-    validate(&config)?;
-    Ok(config)
+    let raw: RawConfig = serde_yaml::from_value(value).context("parsing v1 config")?;
+    validate_structure(&raw)?;
+    let checks = raw
+        .checks
+        .into_iter()
+        .map(|(id, raw)| {
+            let check = validate_check(&id, raw)?;
+            Ok((id, check))
+        })
+        .collect::<Result<_>>()?;
+    Ok(V1Config {
+        version: raw.version,
+        execution: V1Execution {
+            timeout_secs: raw.execution.timeout_secs,
+            total_timeout_secs: raw.execution.total_timeout_secs,
+        },
+        checks,
+    })
 }
 
-pub(crate) fn parse_v1_file(path: &Path) -> Result<V1Config> {
-    let input = std::fs::read_to_string(path)
-        .with_context(|| format!("reading v1 config {}", path.display()))?;
-    parse_v1_str(&input)
+pub fn parse_v1_file(path: &Path) -> Result<V1Config> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("reading v1 config {}", path.display()))?;
+    parse_v1_bytes(&bytes)
 }
-
-/// Parse a v1 policy from the exact approved bytes instead of a live path, so
-/// evaluation cannot observe a policy the operator never approved.
-pub(crate) fn parse_v1_bytes(bytes: &[u8]) -> Result<V1Config> {
-    let input = std::str::from_utf8(bytes).context("v1 config is not valid UTF-8")?;
-    parse_v1_str(input)
+pub fn parse_v1_bytes(bytes: &[u8]) -> Result<V1Config> {
+    parse_v1_str(std::str::from_utf8(bytes).context("v1 config is not valid UTF-8")?)
 }
-
-fn validate(config: &V1Config) -> Result<()> {
+fn validate_structure(config: &RawConfig) -> Result<()> {
     if config.version != 1 {
         return Err(anyhow!(
             "unsupported config version {}; expected version: 1",
@@ -125,25 +263,49 @@ fn validate(config: &V1Config) -> Result<()> {
     if config.execution.timeout_secs == 0 || config.execution.total_timeout_secs == 0 {
         return Err(anyhow!("execution budgets must be positive integers"));
     }
-    for (id, check) in &config.checks {
-        if id.is_empty() {
-            return Err(anyhow!("check id must be nonempty"));
-        }
-        if !run_has_executable_content(&check.run) {
-            return Err(anyhow!(
-                "check `{id}` run must contain an executable command"
-            ));
-        }
-        validate_events(id, &check.on)?;
-        if let Some(files) = &check.files {
+    Ok(())
+}
+fn validate_check(id: &str, raw: RawCheck) -> Result<V1Check> {
+    if id.is_empty() {
+        return Err(anyhow!("check id must be nonempty"));
+    }
+    if !run_has_executable_content(&raw.run) {
+        return Err(anyhow!(
+            "check `{id}` run must contain an executable command"
+        ));
+    }
+    validate_events(id, &raw.on)?;
+    if raw.timeout_secs == Some(0) {
+        return Err(anyhow!(
+            "check `{id}` timeout_secs must be a positive integer"
+        ));
+    }
+    let matcher = raw
+        .files
+        .as_ref()
+        .map(|files| {
             if files.is_empty() || files.iter().any(|glob| glob.trim().is_empty()) {
                 return Err(anyhow!("check `{id}` files must contain a nonempty glob"));
             }
-            ScopeMatcher::new(files)
-                .with_context(|| format!("invalid files glob for check `{id}`"))?;
-        }
-    }
-    Ok(())
+            ScopeMatcher::new(files).with_context(|| format!("invalid files glob for check `{id}`"))
+        })
+        .transpose()?;
+    Ok(V1Check {
+        files: raw.files,
+        on: raw.on,
+        run: raw.run,
+        timeout_secs: raw.timeout_secs,
+        matcher,
+    })
+}
+
+fn deserialize_timeout_secs<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Some).map_err(|error| {
+        serde::de::Error::custom(format!("timeout_secs must be a positive integer: {error}"))
+    })
 }
 
 fn validate_events(id: &str, events: &[V1Event]) -> Result<()> {
@@ -190,7 +352,7 @@ where
 
 fn deserialize_checks<'de, D>(
     deserializer: D,
-) -> std::result::Result<BTreeMap<String, V1Check>, D::Error>
+) -> std::result::Result<BTreeMap<String, RawCheck>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -317,6 +479,18 @@ mod tests {
             parse("version: 1\nchecks:\n  safety:\n    run: '# TODO: implement safety check'\n")
                 .unwrap_err();
         assert!(err.to_string().contains("safety"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_unknown_execution_fields_in_the_shared_parser() {
+        for field in ["timeout_sec", "total_timeout_sec", "unexpected"] {
+            let input =
+                format!("version: 1\nexecution: {{{field}: 1}}\nchecks:\n  ok: {{run: 'true'}}\n");
+            let error = parse_v1_str(&input).unwrap_err();
+            let detail = format!("{error:#}");
+            assert!(detail.contains("unknown field"), "{detail}");
+            assert!(detail.contains(field), "{detail}");
+        }
     }
 
     #[test]

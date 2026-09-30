@@ -55,4 +55,20 @@ mod tests {
         assert!(!strip_frontmatter(GUIDE).contains("IRONLINT_TMPFILE"));
         assert!(strip_frontmatter(GUIDE).contains("with stdin closed"));
     }
+
+    #[test]
+    fn guide_policy_examples_use_the_shared_validated_model() {
+        let mut examples = 0;
+        for block in GUIDE.split("```yaml\n").skip(1) {
+            let yaml = block.split("```").next().unwrap();
+            let policy = ironlint_core::config::parse_v1_str(yaml).unwrap();
+            assert_eq!(policy.version(), 1);
+            assert!(!policy.checks().is_empty());
+            examples += 1;
+        }
+        assert!(
+            examples > 0,
+            "the shipped guide must contain a valid policy example"
+        );
+    }
 }

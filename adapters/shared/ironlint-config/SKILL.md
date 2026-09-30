@@ -4,7 +4,7 @@ description: Authors, modifies, or removes checks in an IronLint .ironlint.yml p
 license: MIT
 metadata:
   author: dynamik-dev
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # IronLint policy authoring
@@ -24,9 +24,11 @@ checks:
   format:
     files: ["*.rs", "Cargo.toml"]
     on: [change, accept]
+    timeout_secs: 10
     run: cargo fmt --all --check
 
   tests:
+    timeout_secs: 180
     run: cargo test --locked
 ```
 
@@ -42,9 +44,23 @@ iteration over files. `files` selects a check; it does not restrict what the
 command can read or modify.
 
 The optional `execution` block accepts positive integer `timeout_secs` and
-`total_timeout_secs`. Their defaults are 30 and 300 seconds. Put longer command
-sequences in a reviewed script under `.ironlint/scripts/` and invoke that script
-from `run`.
+`total_timeout_secs`. Their defaults are 30 and 300 seconds. A check's optional
+positive integer `timeout_secs` overrides the command default for both events;
+it may be shorter or longer, but the remaining total budget always caps it.
+Timeout values cannot be null, zero, negative, fractional, or strings.
+
+Check overrides require evaluator 1.1.0 or newer. Update the evaluator before
+adding the field; older binaries reject it. Remove it before downgrading and
+review/renew consent after either edit. Verdict schema 7 is unchanged.
+`show-resolved-config` and `explain` expose the override and resolved command
+budget before the total cap.
+
+The total deadline covers selection, policy/script verification, commands,
+output handling, and final verification. Initial capture and consent lookup
+precede it. Expired final verification denies pass even when commands passed;
+filesystem deadline checks are cooperative and cleanup has a bounded grace.
+Put command sequences in a reviewed script under `.ironlint/scripts/` and
+invoke that script from `run`.
 
 ## Command contract
 

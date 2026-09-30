@@ -1,5 +1,6 @@
 mod decision;
-mod policy_hash;
+pub(crate) mod policy_hash;
+mod script_files;
 mod store;
 mod summary;
 mod worktree;

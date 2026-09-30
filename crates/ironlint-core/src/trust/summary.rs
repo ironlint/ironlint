@@ -1,25 +1,20 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-use super::policy_hash::{
-    classify_entry, collect_gate_files, compute_hash, compute_worktree_hash, config_paths,
-    policy_script_dirs, EntryKind,
-};
-use super::worktree::WorktreeScope;
+use crate::policy::PolicySnapshot;
 
 /// A read-only, human-facing enumeration of exactly what trust covers.
 ///
 /// Covers the digest itself, the number of resolved checks, and every file
-/// under `.ironlint/scripts/` folded into it. `compute_hash` retains no file
-/// list of its own (it only ever returns the final digest), so this is a
-/// fresh, faithful re-walk via the same helpers — not a cache of anything
-/// `compute_hash` remembers.
+/// under `.ironlint/scripts/` folded into it. The model, labels, and hash come
+/// from one immutable capture, so the report needs no second policy read or
+/// script walk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlessedSummary {
     /// The config path as passed to [`blessed_summary`].
     pub config_path: PathBuf,
     /// The authoritative digest, `"sha256:<hex>"`, identical to what
-    /// [`compute_hash`] would return for the same `config_path`.
+    /// [`super::compute_hash`] would return for the same `config_path`.
     pub config_hash: String,
     /// Number of configured checks.
     pub checks: usize,
@@ -37,40 +32,32 @@ pub struct BlessedSummary {
 /// the filesystem; safe to call any time after a config parses (typically
 /// right after a successful [`bless`]).
 ///
-/// Faithful to the full trust surface [`compute_hash`] folds (config +
+/// Faithful to the full trust surface [`super::compute_hash`] folds (config +
 /// scripts) — a summary that silently omitted the scripts surface would
 /// misrepresent what was actually blessed.
 pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
-    let config_hash = compute_hash(config_path)?;
-    let v1 = crate::config::v1::parse_v1_file(config_path)?;
-    let config_paths = config_paths(config_path)?;
-    let script_dirs = policy_script_dirs(&config_paths);
-
-    let mut scripts: Vec<String> = Vec::new();
-    for dir in &script_dirs {
-        match classify_entry(dir)? {
-            EntryKind::Dir => {
-                for (rel, _bytes) in collect_gate_files(dir)? {
-                    scripts.push(rel);
-                }
-            }
-            EntryKind::Missing => {}
-            EntryKind::File => {
-                anyhow::bail!("expected {} to be a directory (scripts dir)", dir.display());
-            }
-        }
-    }
+    let snapshot = PolicySnapshot::load(config_path)?;
+    let config_hash = snapshot.hash().to_owned();
+    let checks = snapshot.policy().checks().len();
+    let mut scripts: Vec<_> = snapshot
+        .identity
+        .digests
+        .iter()
+        .filter_map(|(label, _)| {
+            label
+                .strip_prefix("scripts\0")
+                .and_then(|label| label.split_once('\0'))
+                .map(|(_, rel)| rel.to_owned())
+        })
+        .collect();
     scripts.sort();
     scripts.dedup();
-
-    let checks = v1.checks.len();
-    let scope_path = &config_paths[0];
-    let scope = match WorktreeScope::discover(scope_path) {
-        Some(s) if policy_is_eligible(scope_path, &s).unwrap_or(false) => {
-            "linked worktrees".to_string()
-        }
-        _ => "this config path".to_string(),
-    };
+    let scope = if snapshot.identity.worktree.is_some() {
+        "linked worktrees"
+    } else {
+        "this config path"
+    }
+    .to_owned();
 
     Ok(BlessedSummary {
         config_path: config_path.to_path_buf(),
@@ -79,14 +66,6 @@ pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
         scripts,
         scope,
     })
-}
-
-/// True iff the policy and scripts are under `scope.worktree_root`.
-fn policy_is_eligible(config_path: &Path, scope: &WorktreeScope) -> Result<bool> {
-    match compute_worktree_hash(config_path, scope)? {
-        Some(_) => Ok(true),
-        None => Ok(false),
-    }
 }
 
 #[cfg(test)]

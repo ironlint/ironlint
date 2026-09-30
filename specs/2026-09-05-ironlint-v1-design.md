@@ -199,12 +199,14 @@ checks:
     run: ./scripts/check-architecture
 
   tests:
+    timeout_secs: 180
     run: ./scripts/test
 ```
 
 - `version: 1` is required and denotes this configuration contract.
 - `checks` is a nonempty mapping of stable IDs to checks.
-- A check has required nonempty `run`, optional `files`, and optional `on`.
+- A check has required nonempty `run`, optional `files`, optional `on`, and
+  optional positive integer `timeout_secs`.
 - `on` defaults to `[accept]`. Valid values are `[accept]` and either ordering
   of `[change, accept]`; duplicates, unknown events, and omission of `accept`
   from an explicit list are errors.
@@ -212,6 +214,12 @@ checks:
   matching semantics remain: `*.rs` matches at any depth.
 - `execution` is optional. Defaults are 30 seconds per check and 300 seconds
   per invocation. Values must be positive integers; zero is invalid.
+- Check-level `timeout_secs` overrides the per-command default for both events.
+  It may exceed that default, but cannot extend the total invocation deadline.
+  Null, zero, negative, fractional, string, and duplicate values are invalid.
+  The field requires evaluator 1.1.0 or newer. Existing policies remain valid;
+  older evaluators reject the new field. Remove it before downgrading, and renew
+  execution consent after reviewing either edit.
 - Unknown keys are errors. Duplicate mapping keys are errors.
 
 There is no `steps`, `extends`, severity, conditional expression, per-rule
@@ -238,6 +246,13 @@ their location in the candidate is not itself evidence of approval.
   whitespace-delimited command argument list. Scripts select their own inputs.
 - Run serially. No daemon, automatic retries, dependency graph, or cache.
 - Enforce the smaller of the remaining invocation budget and per-check budget.
+- Start one monotonic total deadline before check selection. It includes
+  pre-check verification, commands, pipe handling, and final verification.
+  Initial snapshot loading and CLI consent lookup precede this deadline. Check
+  expiry during traversal and read chunks, and again before spawning. Expired
+  final verification denies pass while retaining completed results. Filesystem
+  cancellation is cooperative; an uninterruptible OS operation may overrun the
+  deadline, and process cleanup has a bounded grace period.
 - Retain process cleanup and bounded pipe-draining behavior. Cap captured
   stdout and stderr at 64 KiB each per check, continue draining excess bytes,
   and explicitly mark truncation.
@@ -291,6 +306,11 @@ Keep outer exit numbers: `0` successful evaluation, `1` config/input error,
 `2` check violation, `3` execution/incomplete error, `4` untrusted local policy.
 For mixed results, errors take precedence over violations. Preserve all
 completed check results in JSON.
+
+`validate`, `explain`, and `show-resolved-config` use the shared validated policy
+model without consent I/O. Inspection exposes command timeout overrides and
+effective defaults. The optional timeout field does not change verdict schema 7;
+exhausting the invocation deadline uses the existing `total_timeout` reason.
 
 V1 JSON uses schema 7 and includes:
 

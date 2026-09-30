@@ -45,8 +45,60 @@ IronLint returns a human report by default or JSON with a documented exit code.
 An empty `change` selection is successful evaluation, but it is not a complete
 acceptance result. See [JSON results](reference/verdict-json.md).
 
-Before executing a policy, IronLint requires local execution consent. That is a
+Before CLI execution, IronLint requires local execution consent. That is a
 record of what you reviewed, not a sandbox or a guarantee about a remote system.
 If another system uses IronLint to decide whether to publish or merge work, that
 system must protect its own credentials and connect the result to the exact
 change it evaluated. See [execution consent](security/trust.md).
+
+## Shared policy and execution
+
+Core exposes a validated, read-only v1 policy with compiled file matchers. One
+selector supplies both execution and explanation. An immutable `PolicySnapshot`
+captures the policy bytes and managed-script identity. Library callers can
+evaluate a snapshot directly; the CLI wraps it in local approval before running.
+The existing approved-policy evaluator forwards to the same implementation.
+
+```rust
+use ironlint_core::{config::V1Event, policy::PolicySnapshot, runner::evaluate_v1_snapshot};
+use std::path::Path;
+
+let snapshot = PolicySnapshot::load(Path::new("/work/policy.yml"))?;
+let verdict = evaluate_v1_snapshot(&snapshot, Path::new("/work/candidate"), V1Event::Accept, None)?;
+```
+
+One monotonic total deadline starts before selection and includes verification,
+commands, output handling, and final verification. Snapshot loading and consent
+lookup happen first. Verification streams script content with a fixed buffer,
+preserving the consent hash framing. Checks cannot start after budget expiry;
+expired final verification returns an error even if every command passed.
+Filesystem deadline checks are cooperative, and process cleanup has a bounded
+grace period.
+
+## Installation writes
+
+Owned replacements use an exclusively created sibling temporary file, complete
+writes and sync, then atomic publication. Existing modes are preserved; explicit
+Git-hook installation adds owner execute permission. Policy scaffolding uses
+exclusive creation at the final path and refuses symlinks. First backups publish
+complete bytes without overwriting an existing backup.
+
+IronLint mutations of shared resources acquire locks in a stable order and
+re-read state under those locks. These locks coordinate IronLint processes;
+editors and other programs do not participate. A pending ownership intent lets
+an interrupted adapter installation repair metadata on retry while preserving
+foreign or edited content. Diagnostics inspect both scopes and report incomplete
+ownership, unreadable registrations, and inactive Git hooks without executing them.
+
+## Source map
+
+| Behavior | Source |
+| --- | --- |
+| Validated policy and selection | `crates/ironlint-core/src/config/` |
+| Immutable snapshot, consent hashing, and streamed scripts | `crates/ironlint-core/src/policy.rs`, `trust/policy_hash.rs`, `trust/script_files.rs` |
+| Serial evaluation, deadlines, and process execution | `crates/ironlint-core/src/runner/`, `deadline.rs`, `engine/` |
+| Local execution consent | `crates/ironlint-core/src/trust/` |
+| Atomic publication and resource locks | `crates/ironlint-core/src/filesystem.rs`, `filesystem/locks.rs` |
+| Adapter ownership and materialization | `crates/ironlint-core/src/adapter/` |
+| Setup, inspection, diagnostics, and updater | `crates/ironlint-cli/src/commands/` |
+| Pi feedback subprocess lifecycle | `adapters/pi/src/index.ts` |

@@ -88,8 +88,10 @@ Fixture tests cannot prove repository enforcement. Publishing requires task auth
 <!-- graft:start -->
 ## Graft — repo context graph
 
-This repo is indexed in `graft/`: small linked markdown nodes that explain each
-system and carry exact file:line spans, kept in sync with the code through git.
+This repo is indexed in the ignored, regenerable `graft/` cache: small linked
+markdown nodes that explain each system and carry exact file:line spans.
+Refresh it after code changes; source and the current contract take precedence
+over stale generated concept summaries.
 
 For ANY task here — understanding how something works, finding where code lives,
 or scoping a change — get context from the graph before grepping or opening

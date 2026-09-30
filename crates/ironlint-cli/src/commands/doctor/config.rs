@@ -4,7 +4,7 @@ use super::{CheckResult, DoctorContext, Status};
 
 pub(super) enum ConfigSnapshot {
     Missing,
-    Loaded(crate::commands::config::ReadOnlyConfig),
+    Loaded(ironlint_core::config::V1Config),
     Failed(anyhow::Error),
 }
 
@@ -17,7 +17,7 @@ pub(super) fn load_config_snapshot(config_path: &Path) -> ConfigSnapshot {
 
 fn snapshot_from_load(
     config_path: &Path,
-    result: anyhow::Result<crate::commands::config::ReadOnlyConfig>,
+    result: anyhow::Result<ironlint_core::config::V1Config>,
 ) -> ConfigSnapshot {
     match result {
         Ok(config) => ConfigSnapshot::Loaded(config),
@@ -85,14 +85,12 @@ pub(super) fn check_config_parses_snapshot(
             detail: "config missing; nothing to parse".into(),
             remediation: Some("run `ironlint init` first".into()),
         },
-        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::V1(config)) => {
-            CheckResult {
-                name: "parses",
-                status: Status::Pass,
-                detail: format!("config parses ({} check(s))", config.checks.len()),
-                remediation: None,
-            }
-        }
+        ConfigSnapshot::Loaded(config) => CheckResult {
+            name: "parses",
+            status: Status::Pass,
+            detail: format!("config parses ({} check(s))", config.checks().len()),
+            remediation: None,
+        },
         ConfigSnapshot::Failed(e) => CheckResult {
             name: "parses",
             status: Status::Fail,
@@ -117,14 +115,14 @@ pub(super) fn check_script_paths_snapshot(
     snapshot: &ConfigSnapshot,
 ) -> CheckResult {
     let (check_count, bad) = match snapshot {
-        ConfigSnapshot::Loaded(crate::commands::config::ReadOnlyConfig::V1(config)) => {
+        ConfigSnapshot::Loaded(config) => {
             let mut bad = Vec::new();
-            for (id, check) in &config.checks {
-                if let Some(issue) = check_run_path(&ctx.dir, id, &check.run) {
+            for (id, check) in config.checks() {
+                if let Some(issue) = check_run_path(&ctx.dir, id, check.run()) {
                     bad.push(issue);
                 }
             }
-            (config.checks.len(), bad)
+            (config.checks().len(), bad)
         }
         ConfigSnapshot::Missing | ConfigSnapshot::Failed(_) => {
             return CheckResult {

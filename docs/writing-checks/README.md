@@ -12,6 +12,7 @@ checks:
     on: [change, accept]
     run: cargo fmt --all --check
   tests:
+    timeout_secs: 180
     run: cargo test --locked
 ```
 
@@ -30,7 +31,14 @@ an acceptance check. Each selected command runs once.
 - Retained environment: `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`, and `LC_*`.
   Other inherited variables are not forwarded. This is not a filesystem sandbox.
 - Defaults: 30 seconds per check and 300 seconds total; configure `execution` to
-  change them. Each output stream retains at most 64 KiB and marks truncation.
+  change them. Set `timeout_secs` on a check for a shorter or longer command
+  budget (IronLint 1.1.0+). Both events use it, and the remaining total budget
+  always caps it. Review policy edits and renew consent with `ironlint trust`.
+- The total deadline covers selection, verification, commands, output handling,
+  and final verification; loading the initial snapshot and consent precede it.
+  Verification checks expiry between filesystem operations; OS I/O is not
+  interruptible by this deadline. Cleanup adds a bounded grace period.
+- Each output stream retains at most 64 KiB and marks truncation.
 
 Put sequences in scripts and deliberate policy exceptions in reviewed check code.
 

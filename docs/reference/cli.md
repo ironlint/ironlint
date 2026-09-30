@@ -16,11 +16,16 @@ ironlint check [--event accept|change] [--file PATH]...
   parent directories up to the Git boundary; it does not change `--root`.
 - Human output is the default. It includes completed results, top-level errors,
   and every unexecuted check's ID and reason. Use `--format json` for
-  machine-readable results.
+machine-readable results.
 
 Exit 0 means evaluation finished successfully, including an empty change
 selection. Exits 1, 2, 3, and 4 mean input error, policy violation, execution
 error, and missing execution consent. See [running checks](../operating/running-checks.md).
+
+Timeouts come from the policy: `execution` sets command and total defaults;
+a check's optional `timeout_secs` overrides the command default (IronLint
+1.1.0+). The total deadline includes verification and cannot be extended by a
+check. See the [policy reference](config-schema.md).
 
 ## Review a policy
 

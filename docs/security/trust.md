@@ -34,6 +34,21 @@ skipping consent, and a config you edited is never modified or blessed by
 An untrusted policy returns exit 4; invalid or unverifiable inputs can return
 exit 1.
 
+Library evaluation can use a validated immutable `PolicySnapshot` without a
+local consent store. `evaluate_v1_snapshot` takes a typed event and uses the same
+selection, execution limits, and drift checks as the CLI. The existing
+`evaluate_v1(&ApprovedPolicy, ...)` API forwards to it. CLI execution still
+requires consent; a library result does not grant publication authority.
+
+Snapshot loading captures the policy bytes and managed-script identity once.
+Direct and worktree consent hashes describe that same capture; verification
+streams script bytes using a fixed buffer and compares ordered digests. Consent
+formats and hash framing are unchanged. The execution deadline includes repeated
+verification, while initial capture and consent lookup occur before execution.
+Managed script entries must be regular files or ordinary directories; symlinks
+and special entries fail verification. A file that changes size or identity
+during a streamed read also fails instead of approving a partial capture.
+
 Consent is not a sandbox. Commands can still read and modify what your account
 can access, and changes outside the managed policy surface are not an approval
 signal. If a CI system or hosting service uses the result to make a decision,

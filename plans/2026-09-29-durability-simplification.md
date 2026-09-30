@@ -6,7 +6,10 @@
   sub-agents, including the per-check timeout follow-up.
 - **Status:** implementation in progress; baseline established and D1 regressions
   observed failing. Packets are implemented and reviewed in dependency order.
-- **Next packet:** D4, then D5 and D6. Batch A is implemented and independently
+- **Next packet:** D7 and D8, then separate batch-C review. Batch B is implemented
+  and independently reviewed; its empty-selection deadline finding is fixed and
+  rechecked. Full Rust tests pass: 504 tests across 28 suites, with Clippy and formatting.
+  Batch A is implemented and independently
   reviewed; both review findings were fixed with failing regressions and rechecked.
   Integrated Rust tests pass: 463 tests across 25 suites. Coverage remains a final gate.
 - **Baseline:** the completed [v1 release plan](2026-09-05-ironlint-v1-implementation.md)
@@ -72,14 +75,14 @@ renew consent. Runtime safety constants stay in code and are tested.
 | ID | Work | Depends on | Batch | Status |
 | --- | --- | --- | --- | --- |
 | D0 | Establish baseline and reproduce defects | None | Preparation | Complete |
-| D1 | Propagate hook and updater failures | D0 | A | Implemented |
-| D2 | Share safe file creation/replacement | D1 | A | Implemented |
-| D3 | Report stale installs and incomplete evaluations | D2 | A | Implemented |
-| D4 | Share policy model and separate consent from evaluation | D3 | B | In progress |
-| D5 | Carry absolute deadlines and stream script verification | D4 | B | Planned |
-| D6 | Add per-check timeout override | D5 | B | Planned |
-| D7 | Bound and cancel Pi subprocess runs | D6 | C | Planned |
-| D8 | Replace the installation TUI with plain confirmation | D3 | C | Planned |
+| D1 | Propagate hook and updater failures | D0 | A | Complete |
+| D2 | Share safe file creation/replacement | D1 | A | Complete |
+| D3 | Report stale installs and incomplete evaluations | D2 | A | Complete |
+| D4 | Share policy model and separate consent from evaluation | D3 | B | Complete |
+| D5 | Carry absolute deadlines and stream script verification | D4 | B | Complete |
+| D6 | Add per-check timeout override | D5 | B | Complete |
+| D7 | Bound and cancel Pi subprocess runs | D6 | C | In progress |
+| D8 | Replace the installation TUI with plain confirmation | D3 | C | In progress |
 | D9 | Verify the integrated tree and update evidence | D7, D8 | Final | Planned |
 
 The ordering stabilizes user-visible failures before moving shared abstractions.
@@ -635,7 +638,7 @@ Required edits: NONE; the protections above are already included in the packets.
 | Packet/batch | Commit or tree | Failing-first evidence | Focused validation | Separate review | Result |
 | --- | --- | --- | --- | --- | --- |
 | D0 | `e23b18c` plus planning/user hook changes | Failed downloader and partial download regressions return false success on unchanged updater | `cargo test --locked`: 397 passed, 24 suites (Rust 1.96.1) | n/a | Complete |
-| A: D1–D3 | Tested working tree based on `e23b18c`; local commit follows | Masked shell failures; file collision/mode/ownership/symlink defects; all 13 diagnostic cases; partial first-backup publication; writable updater handle and inactive Git-hook regressions | Integrated: 463 tests / 25 suites. Focused fixes: 22 updater unit, 18 diagnostic/update integration, 12 filesystem, 14 Git unit, 8 Git integration. All-target Clippy and format clean | Separate agent found updater write-access and inactive-hook defects; both fixed and rechecked closed | Reviewed |
-| B: D4–D6 | Pending | Pending | Pending | Pending | Planned |
+| A: D1–D3 | `c677ce0` | Masked shell failures; file collision/mode/ownership/symlink defects; all 13 diagnostic cases; partial first-backup publication; writable updater handle and inactive Git-hook regressions | Integrated: 463 tests / 25 suites. Focused fixes: 22 updater unit, 18 diagnostic/update integration, 12 filesystem, 14 Git unit, 8 Git integration. All-target Clippy and format clean | Separate agent found updater write-access and inactive-hook defects; both fixed and rechecked closed | Complete |
+| B: D4–D6 | Tested tree after `c677ce0`; local commit follows | D4: supplied bytes A incorrectly approved live bytes B through inherited worktree consent. D5: expired verification still launches a command; expired final verification reports pass; continuous drain ignores cancellation; empty selection bypasses expiry. D6: unsupported field/inspection; shorter/longer overrides ignored by global-only runner | Integrated: 504 Rust tests / 28 suites (15.81s), then all-target Clippy and format clean, strictly serial. Core timeout 8, runner 9, focused CLI 175 / 6 suites. Shipped skill validation passes; schema example parses | Independent PASS; empty-selection finding fixed and rechecked, no open findings | Complete |
 | C: D7–D8 | Pending | Pending | Pending | Pending | Planned |
 | D9 | Pending | n/a | Required gates pending | Prior findings must be closed | Planned |
