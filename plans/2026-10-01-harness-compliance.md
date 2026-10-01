@@ -358,12 +358,12 @@ Tagging, package publication, and deployments are separate operator actions.
 
 | Packet | Status | Tested commit and evidence | Separate review |
 | --- | --- | --- | --- |
-| H0 | Planned | Pending runtime pin and completion probe | Pending |
-| H1 | Planned | Pending controller and candidate tests | Pending |
-| H2 | Planned | Pending rendering/authoring checks | Pending |
-| H3 | Planned | Pending runtime scenarios and live repair measurements | Pending |
-| H4 | Planned | Pending positive/negative/repaired fixtures | Pending |
-| H5 | Planned | Pending integrated verification | Pending |
+| H0 | Complete | `212c427`; Pi 0.87.1 pin, actual SDK startup/settlement/queued/abort probes, source map and capability record | Separate review; findings fixed in commit |
+| H1 | Complete | `212c427`; candidate identity, strict accept, bounded repair, cancellation and tool-confinement tests | Separate review; findings fixed in commit |
+| H2 | Complete | `212c427`; bounded dual-stream feedback and authoring guidance tests | Separate review; findings fixed in commit |
+| H3 | Partial | `212c427`; deterministic real SDK plus CLI scenarios pass. Live comparison has no denominator: configured OpenRouter credential returned 401 before work began | Separate review complete; live evidence pending |
+| H4 | Complete | `212c427`; all 9 real CLI positive/negative/repaired recipe fixtures pass in isolated consent | Separate review found no recipe regression |
+| H5 | Partial | `212c427`; npm, shell, workspace tests, Clippy, format, ≥80% region coverage, and Docker features pass. Final release record awaits H3 live results | Separate review complete; release qualification pending |
 
 ## Sources and follow-up boundaries
 

@@ -5,7 +5,7 @@
 - Runtime: `@earendil-works/pi-coding-agent` 0.87.1 and `@earendil-works/pi-ai` 0.87.1, exact versions in `package-lock.json`.
 - Upstream source: [`f07218c4d4bbc12bef056a7058c3dd49dfe41abe`](https://github.com/earendil-works/pi/tree/f07218c4d4bbc12bef056a7058c3dd49dfe41abe); [release](https://github.com/earendil-works/pi/releases/tag/v0.87.1), [SDK](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/docs/sdk.md), [extensions](https://github.com/earendil-works/pi/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/docs/extensions.md).
 - Host: macOS Darwin 25.6.0, arm64; Node v24.18.0; Pi CLI 0.87.1.
-- Tested branch base: `20b3f8a213c670659105f24c3684ea273ccbc15c`; implementation commit: pending.
+- Tested branch base: `20b3f8a213c670659105f24c3684ea273ccbc15c`; implementation commit: `212c427`.
 - Capture commands: `pi --version`; `IRONLINT_TEST_BIN=/absolute/ironlint npm test` from `adapters/pi`; `bash scripts/test-verify-acceptance.sh`; `IRONLINT_TEST_BIN=/absolute/ironlint bash scripts/test-check-recipes.sh`.
 
 ## Capability audit
