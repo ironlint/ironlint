@@ -76,6 +76,12 @@ into `run`; read paths from environment variables or quote fixed paths in the
 command. Exit 0 passes. Exit 1–125 reports a policy violation. Exit 126/127,
 signals, timeouts, or launch failures are execution errors.
 
+On a violation, print a concise file/line when known, the pattern required to
+repair the code, and a relevant project document or rule reference. For example,
+`src/api/orders.py:4: use OrderService instead of importing project.db; see
+docs/architecture.md`. Both output streams may be shown to the agent, but
+diagnostics are advisory text; check success still depends only on exit 0.
+
 ## Workflow
 
 Validate and review before granting local execution consent:

@@ -1,0 +1,6 @@
+version: 1
+checks:
+  generated:
+    files: ["data/catalog.json", "generated/catalog.json", ".ironlint/scripts/generated.py"]
+    on: [change, accept]
+    run: python3 .ironlint/scripts/generated.py

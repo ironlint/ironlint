@@ -104,7 +104,7 @@ setInterval(() => process.stdout.write("pending bytes"), 10)
 })
 
 test("D7 fresh CLI produces accepted complete change feedback with isolated consent", async (t) => {
-  const binary = resolve(fileURLToPath(new URL("../../../target/debug/ironlint", import.meta.url)))
+  const binary = process.env.IRONLINT_TEST_BIN ?? resolve(fileURLToPath(new URL("../../../target/debug/ironlint", import.meta.url)))
   if (!existsSync(binary)) return t.skip("build ironlint before the real CLI smoke")
   const root = isolated(t)
   process.env.PATH = resolve(binary, "..") + delimiter + (process.env.PATH ?? "")
@@ -123,7 +123,7 @@ test("D7 fresh CLI produces accepted complete change feedback with isolated cons
 
 test("D7 real CLI cancellation stops a check in its independent process group", async (t) => {
   if (process.platform === "win32") return t.skip("Unix process-group cancellation")
-  const binary = resolve(fileURLToPath(new URL("../../../target/debug/ironlint", import.meta.url)))
+  const binary = process.env.IRONLINT_TEST_BIN ?? resolve(fileURLToPath(new URL("../../../target/debug/ironlint", import.meta.url)))
   if (!existsSync(binary)) return t.skip("build ironlint before the real CLI smoke")
   const root = isolated(t)
   process.env.PATH = resolve(binary, "..") + delimiter + (process.env.PATH ?? "")

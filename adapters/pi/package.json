@@ -4,14 +4,21 @@
   "description": "Pi extension for IronLint: post-edit change feedback for AI coding agents.",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "ironlint-pi-complete": "./bin/ironlint-pi-complete"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "files": [
     "src",
+    "bin",
+    "completion.md",
     "README.md"
   ],
   "engines": {
@@ -19,7 +26,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts test/compliance/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -30,6 +37,8 @@
     }
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "@types/node": "*",
     "typescript": "^5"
   },

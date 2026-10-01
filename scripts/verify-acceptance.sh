@@ -23,13 +23,23 @@ jq -se --argjson expected "$expected" '
   and (.schema == 7)
   and (.event == "accept")
   and (.status == "pass")
-  and (.error == null)
+  and (has("error") and .error == null)
   and (.not_run == [])
   and (.results | type == "array")
   and ([.results[].id] as $actual
        | (($actual | length) == ($actual | unique | length))
        and (($actual | sort) == ($expected | sort)))
-  and (.results | all(.outcome == "pass"))
+  and (.results | all(
+    (.id | type == "string" and length > 0)
+    and .outcome == "pass"
+    and .exit_status == 0
+    and (.stdout | type == "array" and all(type == "number" and . >= 0 and . <= 255 and . == floor))
+    and (.stderr | type == "array" and all(type == "number" and . >= 0 and . <= 255 and . == floor))
+    and .stdout_truncated == false
+    and .stderr_truncated == false
+    and has("reason")
+    and (.reason == null or (.reason | type == "string"))
+  ))
   )
 ' "$verdict" >/dev/null || {
   cat "$verdict" >&2

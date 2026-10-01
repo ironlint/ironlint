@@ -1,0 +1,6 @@
+version: 1
+checks:
+  architecture:
+    files: ["src/project/api/**/*.py", ".ironlint/scripts/architecture.py"]
+    on: [change, accept]
+    run: python3 .ironlint/scripts/architecture.py

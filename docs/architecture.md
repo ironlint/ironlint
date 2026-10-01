@@ -51,6 +51,13 @@ If another system uses IronLint to decide whether to publish or merge work, that
 system must protect its own credentials and connect the result to the exact
 change it evaluated. See [execution consent](security/trust.md).
 
+The explicit [Pi completion runner](../adapters/pi/completion.md) is an
+adapter-owned SDK path. It waits for a settled task, exports a Git working-tree
+candidate, and runs full acceptance against that artifact before returning
+success. It does not change the core evaluator or the ordinary Pi feedback
+extension. Its local same-account guarantee and stronger isolation requirements
+are documented with the runner.
+
 ## Shared policy and execution
 
 Core exposes a validated, read-only v1 policy with compiled file matchers. One
@@ -109,3 +116,4 @@ ownership, unreadable registrations, and inactive Git hooks without executing th
 | Adapter ownership and materialization | `crates/ironlint-core/src/adapter/` |
 | Setup, inspection, diagnostics, and updater | `crates/ironlint-cli/src/commands/` |
 | Pi feedback subprocess lifecycle | `adapters/pi/src/index.ts` |
+| Pi controlled completion and candidate binding | `adapters/pi/src/completion.ts`, `candidate.ts` |

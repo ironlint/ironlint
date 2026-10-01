@@ -16,6 +16,7 @@ cargo build --locked -p ironlint-cli
 mkdir -p target/ironlint-bin
 cp target/debug/ironlint target/ironlint-bin/ironlint
 export PATH="$(pwd)/target/ironlint-bin:${PATH}"
+export IRONLINT_TEST_BIN="$(pwd)/target/ironlint-bin/ironlint"
 
 echo "ci-adapters: pi suite (node)…"
 if ! command -v node >/dev/null 2>&1; then
@@ -23,5 +24,7 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 (cd adapters/pi && npm test)
+bash scripts/test-verify-acceptance.sh
+bash scripts/test-check-recipes.sh
 
 echo "ci-adapters: all adapter suites passed."

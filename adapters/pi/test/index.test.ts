@@ -67,6 +67,27 @@ test("feedback names the failed check and diagnostic", () => {
   assert.equal(feedback(violation, "fallback"), "no-panic: panic found")
 })
 
+test("feedback keeps both output streams and identifies separate execution errors", () => {
+  const verdict = JSON.stringify({ results: [
+    { id: "architecture", outcome: "violation", reason: "required service boundary", stdout: [...Buffer.from("src/api.ts:4")], stderr: [...Buffer.from("See docs/architecture.md")] },
+    { id: "tests", outcome: "error", reason: "command timeout", stdout: [], stderr: [] },
+  ] })
+  const rendered = feedback(verdict, "fallback")
+  assert.match(rendered, /architecture: required service boundary/)
+  assert.match(rendered, /src\/api.ts:4/)
+  assert.match(rendered, /See docs\/architecture.md/)
+  assert.match(rendered, /tests.*command timeout/)
+})
+
+test("feedback marks invalid UTF-8 and caps oversized diagnostics", () => {
+  const verdict = JSON.stringify({ results: [{ id: "rule", outcome: "violation", stdout: [255],
+    stderr: [...Buffer.alloc(30_000, 120)], stdout_truncated: true, stderr_truncated: true }] })
+  const rendered = feedback(verdict, "fallback")
+  assert.match(rendered, /invalid UTF-8/)
+  assert.match(rendered, /truncated/)
+  assert.ok(rendered.length <= 12_000)
+})
+
 test("tool_result keeps a failing write, reports a violation, and gives a reproduction command", async () => {
   fakeIronLint(2, violation)
   const root = project()

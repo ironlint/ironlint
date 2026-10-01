@@ -1,9 +1,10 @@
 # Current work
 
-The [coding-harness compliance plan](2026-10-01-harness-compliance.md) is planned.
-It adds a qualified Pi completion/repair loop, actionable feedback, real-harness
-compliance scenarios, and tested check examples. Implementation has not started;
-begin with H0. The core policy and verdict contracts remain unchanged.
+The [coding-harness compliance plan](2026-10-01-harness-compliance.md) has an
+integrated Pi completion/repair runner, actionable feedback, deterministic
+real-runtime scenarios, and tested check examples. H3 live-model comparison and
+the final H5 release record remain pending because the configured provider
+credential expired. The core policy and verdict contracts remain unchanged.
 
 The [durability and simplification plan](2026-09-29-durability-simplification.md)
 is complete. It records the implemented review fixes and per-check timeout

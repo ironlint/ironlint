@@ -16,8 +16,9 @@ export type PiToolInput = {
 }
 
 type PiContent = { type: string; text?: string; [key: string]: unknown }
-type ExecResult = { exitCode: number; stdout: string; stderr: string; cancelled: boolean }
-type OwnedRun = { result: Promise<ExecResult>; cancel(): void }
+export type ExecResult = { exitCode: number; stdout: string; stderr: string; cancelled: boolean }
+export type OwnedRun = { result: Promise<ExecResult>; cancel(): void }
+export type RunOptions = { executable?: string; event?: "change" | "accept"; env?: NodeJS.ProcessEnv }
 
 interface ToolResultEvent {
   toolName?: string
@@ -125,12 +126,15 @@ class FeedbackRun implements OwnedRun {
   private wall: ReturnType<typeof setTimeout> | undefined
   private grace: ReturnType<typeof setTimeout> | undefined
   private resolve!: (result: ExecResult) => void
+  private readonly event: "change" | "accept"
 
-  constructor(args: string[], root: string) {
-    this.child = spawn("ironlint", [...args, "--cancel-on-stdin-close"], {
+  constructor(args: string[], root: string, options: RunOptions = {}) {
+    this.event = options.event ?? "change"
+    this.child = spawn(options.executable ?? "ironlint", [...args, "--cancel-on-stdin-close"], {
       cwd: root,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      ...(options.env ? { env: options.env } : {}),
     })
     this.result = new Promise((resolve) => { this.resolve = resolve })
     this.child.stdin?.on("error", this.onError)
@@ -219,7 +223,7 @@ class FeedbackRun implements OwnedRun {
     if (this.reason) diagnostics.push(this.reason)
     if (this.cleanupError) diagnostics.push(this.cleanupError)
     let exitCode = this.reason || this.cleanupError ? 3 : code ?? 3
-    if (exitCode === 0 && !completeChangeFeedback(stdout)) {
+    if (this.event === "change" && exitCode === 0 && !completeChangeFeedback(stdout)) {
       exitCode = 3
       stdout = ""
       diagnostics.push("incomplete feedback: invalid schema 7 change JSON")
@@ -231,9 +235,9 @@ class FeedbackRun implements OwnedRun {
   }
 }
 
-function startIronLint(args: string[], root: string): OwnedRun {
+export function startIronLint(args: string[], root: string, options: RunOptions = {}): OwnedRun {
   try {
-    return new FeedbackRun(args, root)
+    return new FeedbackRun(args, root, options)
   } catch (error) {
     return {
       result: Promise.resolve({ exitCode: 3, stdout: "", stderr: `incomplete feedback: ${(error as Error).message}`, cancelled: false }),
@@ -277,14 +281,41 @@ type VerdictResult = {
   reason?: unknown
   stdout?: unknown
   stderr?: unknown
+  stdout_truncated?: unknown
+  stderr_truncated?: unknown
 }
 
 function diagnostic(value: unknown): string {
   if (typeof value === "string" && value.trim()) return value.trim()
   if (Array.isArray(value) && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
-    return Buffer.from(value).toString("utf8").trim()
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(value)).trim() }
+    catch { return "[invalid UTF-8 output]" }
   }
   return ""
+}
+
+const MAX_FEEDBACK = 12_000
+const MAX_CHECK_DETAIL = 2_000
+
+function clipped(value: string, limit: number): string {
+  if (value.length <= limit) return value
+  const notice = "\n[diagnostic truncated; reproduce]"
+  if (limit <= notice.length) return value.slice(0, limit)
+  return `${value.slice(0, limit - notice.length)}${notice}`
+}
+
+function checkFeedback(result: VerdictResult, fallback: string): string {
+  const id = typeof result.id === "string" ? result.id : "check"
+  const reason = diagnostic(result.reason)
+  const stdout = diagnostic(result.stdout)
+  const stderr = diagnostic(result.stderr)
+  const heading = `${id}${result.outcome === "error" ? " [execution error]" : ""}: `
+  const parts = [reason || stdout || stderr || fallback]
+  if (stdout && stdout !== parts[0]) parts.push(`stdout: ${stdout}`)
+  if (stderr && stderr !== parts[0]) parts.push(`stderr: ${stderr}`)
+  if (result.stdout_truncated === true) parts.push("[stdout truncated]")
+  if (result.stderr_truncated === true) parts.push("[stderr truncated]")
+  return heading + clipped(parts.join("\n"), MAX_CHECK_DETAIL)
 }
 
 export function feedback(stdout: string, fallback: string): string {
@@ -293,27 +324,29 @@ export function feedback(stdout: string, fallback: string): string {
     const results = (verdict.results ?? []).filter(
       (result) => result.outcome === "violation" || result.outcome === "error",
     )
-    const lines = results.map((result) => {
-      const id = typeof result.id === "string" ? result.id : "check"
-      return `${id}: ${diagnostic(result.reason) || diagnostic(result.stderr) || diagnostic(result.stdout) || fallback}`
-    })
-    if (lines.length > 0) return lines.join("\n")
-    if (typeof verdict.error === "string" && verdict.error.trim()) return verdict.error.trim()
+    const lines = results.map((result) => checkFeedback(result, fallback))
+    if (lines.length > 0) return clipped(lines.join("\n"), MAX_FEEDBACK)
+    if (typeof verdict.error === "string" && verdict.error.trim()) return clipped(verdict.error.trim(), MAX_FEEDBACK)
   } catch {
     // The reproduction command below remains useful when a future CLI changes JSON.
   }
-  return fallback
+  return clipped(fallback, MAX_FEEDBACK)
 }
 
 function reproduction(args: string[]): string {
-  return `ironlint ${args.map((arg) => (/^[A-Za-z0-9_./:-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ")}`
+  const quote = (arg: string) => (/^[A-Za-z0-9_./:-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)
+  const command = `ironlint ${args.map(quote).join(" ")}`
+  if (command.length <= 2_000) return command
+  const broad = ["check", "--event", "change", "--format", "json"]
+  return `ironlint ${broad.map(quote).join(" ")}`
 }
 
 function feedbackText(result: ExecResult, command: string, superseded: boolean): string {
   const fallback = result.stderr.trim() || result.stdout.trim() || `ironlint exited ${result.exitCode}`
   const prefix = result.exitCode === 2 ? "IronLint change feedback" : "IronLint could not evaluate this change"
   const suffix = superseded ? "\nThis result was superseded by a newer edit." : ""
-  return `${prefix}: ${feedback(result.stdout, fallback)}\nReproduce: ${command}${suffix}`
+  const frame = `${prefix}: \nReproduce: ${command}${suffix}`
+  return `${prefix}: ${clipped(feedback(result.stdout, fallback), Math.max(0, MAX_FEEDBACK - frame.length))}\nReproduce: ${command}${suffix}`
 }
 
 export default function ironlintExtension(pi: PiExtensionAPI): void {

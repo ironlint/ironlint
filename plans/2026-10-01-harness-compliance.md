@@ -1,6 +1,6 @@
 # Stronger coding-harness compliance
 
-Status: **Planned; implementation has not started.**
+Status: **Implementation integrated; live-model qualification remains pending.**
 Date: 2026-10-01.
 Baseline: `feature/durability-simplification` at `dd04068f3092e7d87ded98b99ba01c8f569f17b6`.
 
@@ -15,8 +15,8 @@ This is an adapter-owned follow-up to the completed v1 and durability plans.
 It borrows OpenAPPA's enforced decision point, actionable recovery, behavioral
 policy tests, and reusable rule examples. It does not add information-flow
 tracking, general agent permissions, model-based verdicts, or a security service.
-The current request authorizes writing and publishing this plan; the checkboxes
-below describe future implementation, not completed work or a software release.
+The checkboxes below track the implementation and qualification separately.
+An unchecked packet remains outside the completion-integration release claim.
 
 The first supported completion integration is Pi, the branch's sole active
 adapter. Deliver one qualified path before expanding the harness matrix.
@@ -25,11 +25,11 @@ core release requirements.
 
 ## Resume block
 
-- [ ] H0 — Qualify the Pi completion contract and freeze the supported entry point.
-- [ ] H1 — Implement controlled completion and bounded repair.
-- [ ] H2 — Make feedback useful for repairing specific rules.
+- [x] H0 — Qualify the Pi completion contract and freeze the supported entry point.
+- [x] H1 — Implement controlled completion and bounded repair.
+- [x] H2 — Make feedback useful for repairing specific rules.
 - [ ] H3 — Prove compliance through full coding scenarios and real Pi delivery.
-- [ ] H4 — Ship a small set of check examples with positive/negative fixtures.
+- [x] H4 — Ship a small set of check examples with positive/negative fixtures.
 - [ ] H5 — Integrate documentation, qualification evidence, and release checks.
 
 Start with H0. H1 depends on H0; H2 can follow its contract decision. H3 exercises

@@ -371,10 +371,9 @@ mod tests {
     }
 
     #[test]
-    fn embedded_set_covers_on_disk_adapter_files() {
-        // Drift guard: every shell/ts file shipped under adapters/<h> for a
-        // hook-capable harness must be embedded, else `ironlint init` ships a
-        // partial hook. Checks the two JsonHook harnesses' hooks/ dirs.
+    fn cleanup_only_harnesses_do_not_ship_active_hook_files() {
+        // These harnesses are retained only so uninstall can recognize their
+        // former registrations. Shipping active hook files would revive them.
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../adapters");
         for (harness, subdir) in [("claude-code", "hooks"), ("codex", "hooks")] {
             let dir = root.join(harness).join(subdir);
@@ -387,18 +386,11 @@ mod tests {
                 HarnessKind::JsonHook(s) => *s,
                 _ => unreachable!(),
             };
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let name = entry.unwrap().file_name().into_string().unwrap();
-                if std::path::Path::new(&name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
-                {
-                    assert!(
-                        spec.files.iter().any(|(f, _)| *f == name),
-                        "adapters/{harness}/{subdir}/{name} is not embedded in the registry"
-                    );
-                }
-            }
+            assert!(
+                !dir.exists(),
+                "retired adapters/{harness}/{subdir} still ships hooks"
+            );
+            assert!(spec.files.iter().all(|(_, source)| *source == CLEANUP_HOOK));
         }
     }
 }

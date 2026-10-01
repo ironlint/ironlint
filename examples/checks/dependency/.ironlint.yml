@@ -1,0 +1,6 @@
+version: 1
+checks:
+  dependency:
+    files: ["src/project/core/**/*.py", ".ironlint/scripts/dependency.py"]
+    on: [change, accept]
+    run: python3 .ironlint/scripts/dependency.py

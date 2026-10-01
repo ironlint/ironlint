@@ -370,6 +370,11 @@ Missing events mean missing early feedback. A fresh full acceptance evaluation
 provides the required final check; adapters must not infer acceptance from a
 history of successful edit checks.
 
+Implementation note (2026-10-01): the separate [Pi SDK completion path](../adapters/pi/completion.md)
+controls its own local task result and binds it to a captured Git working-tree
+artifact. The installed Pi extension remains feedback-only. This local path
+does not itself satisfy the independent isolation requirement in section 4.
+
 ## 10. Pre-write checks and local Git hooks
 
 Generic pre-write blocking is not part of the v1 required implementation.

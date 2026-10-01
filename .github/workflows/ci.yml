@@ -187,8 +187,12 @@ jobs:
         working-directory: adapters/pi
         run: npx tsc --noEmit
 
-      - name: Extension integration test
-        run: PATH="$(pwd)/target/release:${PATH}" node --experimental-strip-types --test adapters/pi/test/*.test.ts
+      - name: Pi feedback and controlled completion tests
+        working-directory: adapters/pi
+        run: IRONLINT_TEST_BIN="$(pwd)/../../target/release/ironlint" npm test
+
+      - name: Tested check recipes
+        run: IRONLINT_TEST_BIN="$(pwd)/target/release/ironlint" bash scripts/test-check-recipes.sh
 
   # One lane for the supported Pi adapter contract and its pinned fixtures.
   adapters:

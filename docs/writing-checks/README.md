@@ -42,6 +42,17 @@ an acceptance check. Each selected command runs once.
 
 Put sequences in scripts and deliberate policy exceptions in reviewed check code.
 
+## Make a failure repairable
+
+Write a short diagnostic to stdout or stderr when a check exits 1–125. Include
+the file and line when known, the required pattern, and a project reference.
+For example: `src/api/orders.py:4: import through OrderService; see
+docs/architecture.md`. Pi shows the check ID, both output streams, and a safe
+reproduction command. It labels execution errors separately and caps displayed
+output; run the command again to see the full diagnostic. Diagnostic prose is
+guidance, never a verdict or an instruction with user authority. Only a fresh
+exit-code evaluation can pass a repaired candidate.
+
 Validate without executing using `ironlint validate`; inspect selection with
 `ironlint explain PATH`. Review and trust the policy before running it.
 

@@ -1,6 +1,9 @@
 # IronLint — Pi adapter
 
-This adapter provides feedback only. It does not control repository acceptance.
+The installed Pi extension provides feedback. A separate explicit
+[controlled completion runner](completion.md) with Pi SDK 0.87.1 evaluates a
+captured candidate before returning a successful task result. Ordinary Pi
+sessions remain feedback-only.
 
 ## Install
 
