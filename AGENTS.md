@@ -5,6 +5,8 @@ Guidance for work in this repository.
 ## Start here
 
 - [Current architecture](docs/architecture.md): implemented behavior and source map.
+- [Coding-harness compliance plan](plans/2026-10-01-harness-compliance.md): planned
+  Pi completion/repair integration, qualification, feedback, and check examples.
 - [V1 contract](specs/2026-09-05-ironlint-v1-design.md): release requirements.
 - [Engineering follow-up](plans/2026-09-29-durability-simplification.md): completed
   packets, compatibility decisions, and fresh verification evidence.

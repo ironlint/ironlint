@@ -1,5 +1,10 @@
 # Current work
 
+The [coding-harness compliance plan](2026-10-01-harness-compliance.md) is planned.
+It adds a qualified Pi completion/repair loop, actionable feedback, real-harness
+compliance scenarios, and tested check examples. Implementation has not started;
+begin with H0. The core policy and verdict contracts remain unchanged.
+
 The [durability and simplification plan](2026-09-29-durability-simplification.md)
 is complete. It records the implemented review fixes and per-check timeout
 extension, separate agent reviews, compatibility decisions, and fresh verification
@@ -24,6 +29,7 @@ authorized work that does not fit the active v1 scope.
 
 ## Deferred
 
-No additional work is queued. Add only deliberately requested ideas here, as one
-dated line naming the work and when it would be worth doing. Deferred items do not
-become release requirements without an explicit scope decision.
+No additional work beyond the compliance plan is queued. Add only deliberately
+requested ideas here, as one dated line naming the work and when it would be worth
+doing. Deferred items do not become release requirements without an explicit
+scope decision.
