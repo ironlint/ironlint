@@ -34,7 +34,7 @@ function paths(bytes: Buffer): string[] {
 }
 
 function safePath(path: string): void {
-  if (!path || isAbsolute(path) || path.includes("\0") || path.split(/[\\/]/).some((part) => part === ".." || part === ".git")) {
+  if (!path || isAbsolute(path) || path.includes("\0") || path.split(/[\\/]/).some((part) => part === ".." || part.toLowerCase() === ".git")) {
     throw new Error(`unsupported candidate path: ${path}`)
   }
 }

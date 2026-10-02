@@ -193,10 +193,15 @@ pub fn hook_block(bin: &Path) -> String {
            exit 1\n\
          fi\n\
          ROOT=\"$(git rev-parse --show-toplevel)\" || exit 1\n\
-         [ -f \"$ROOT/.ironlint.yml\" ] || exit 0\n\
+         {1}\n\
          \"$BIN\" check --event accept --root \"$ROOT\" --config \"$ROOT/.ironlint.yml\" || exit \"$?\"\n\
+         ironlint_index_matches || {{\n\
+           echo \"ironlint: staged and working files changed during acceptance; blocking commit\" >&2\n\
+           exit 1\n\
+         }}\n\
          {MARKER_END}",
-        sh_quote(bin)
+        sh_quote(bin),
+        include_str!("git_hook_guard.sh").trim_end()
     )
 }
 
@@ -502,7 +507,7 @@ mod tests {
         assert!(block.contains("check --event accept --root \"$ROOT\""));
         assert!(block.contains("--config \"$ROOT/.ironlint.yml\""));
         assert!(block.contains("binary not found; blocking commit"));
-        assert!(!block.contains("--diff"));
+        assert!(!block.contains("check --diff"));
         assert!(!block.contains("FAIL_CLOSED"));
     }
 

@@ -390,6 +390,14 @@ opt-in and not installed as an unavoidable floor. If commands inspect the
 working tree, its documentation must say so; partially staged content is not
 the same input. Exact staged-tree materialization is outside the minimum v1.
 
+The installed hook refuses a staged/working mismatch: staged regular files must
+match raw bytes and executable status before and after acceptance. The policy
+must exist in both places, staged deletions must be absent on disk, and the index
+must remain unchanged. Symlink target bytes must match; submodules are unsupported.
+This guard does not isolate untracked/ignored dependencies or external symlink
+targets, prevent concurrent same-account
+tampering, or turn the hook into an enforcement boundary.
+
 Bypassing that hook does not bypass a separately enforced repository acceptance
 boundary. IronLint does not classify shell commands to prevent the bypass.
 

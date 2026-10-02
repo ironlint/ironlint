@@ -64,3 +64,14 @@ test("capture rejects missing ignored inputs, symlinks, gitlinks, and internal a
   mkdirSync(join(root, "nested"))
   await assert.rejects(captureCandidate(join(root, "nested"), store), /top level/i)
 })
+
+test("declared ignored inputs cannot capture case aliases of .git", async (t) => {
+  const { root, store } = project(t)
+  // On case-insensitive filesystems this is the real repository config. On
+  // case-sensitive filesystems create the same spelling to exercise validation.
+  if (!existsSync(join(root, ".GIT"))) {
+    mkdirSync(join(root, ".GIT"))
+    writeFileSync(join(root, ".GIT", "config"), "protected")
+  }
+  await assert.rejects(captureCandidate(root, store, [".GIT/config"]), /unsupported candidate path/)
+})

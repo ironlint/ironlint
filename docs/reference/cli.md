@@ -58,6 +58,18 @@ pass; ordinary `init` does not change Git hooks. Uninstall removes owned files
 and registrations while preserving edited or unrelated user content. See
 [AI-tool integrations](../adapters/README.md).
 
+The Git hook evaluates the working tree and refuses to proceed unless staged
+regular files have matching raw bytes and executable status on disk. It checks
+before and after acceptance, requires `.ironlint.yml` in both places, rejects
+staged deletions still present on disk, and detects changes to the index during
+acceptance. Symlink targets must match the staged link bytes. Stage or stash
+remaining changes before committing. Submodules and files transformed by checkout
+filters or line-ending conversion are unsupported by this guard. Untracked and
+ignored dependencies, including external symlink targets, remain working
+tree inputs; this local hook is not an isolated staged-tree evaluation or an
+independent enforcement boundary. `--no-verify` still bypasses it. Re-run
+`ironlint init --git-hook` to update an existing installation.
+
 Interactive setup prints the plan and uses a plain line confirmation. Detected
 Pi is the default; undetected Pi requires an affirmative answer. EOF declines.
 `--yes` confirms, explicit noninteractive `--harness` selects the requested

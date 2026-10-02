@@ -58,6 +58,14 @@ success. It does not change the core evaluator or the ordinary Pi feedback
 extension. Its local same-account guarantee and stronger isolation requirements
 are documented with the runner.
 
+The optional Git hook evaluates the working tree only when staged regular files
+match its raw bytes and executable status. It requires the policy in the index
+and on disk, compares symlink target bytes, and repeats the comparison after
+acceptance. Partial staging, missing files, submodules, and persistent index or
+tracked-file changes block the commit. Untracked/ignored dependencies and concurrent same-account
+processes remain outside this local guard's guarantee; see the
+[CLI reference](reference/cli.md).
+
 ## Shared policy and execution
 
 Core exposes a validated, read-only v1 policy with compiled file matchers. One

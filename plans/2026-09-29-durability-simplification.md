@@ -39,6 +39,8 @@ known/unknown change paths, CLI exits 0–4, and schema-7 JSON. Keep Pi as the s
 installable adapter and retain ownership-aware removal of legacy installations.
 The optional Git hook continues to inspect the working tree; exact staged-tree
 materialization and repository enforcement belong to other work.
+The subsequent [security fixes](../docs/security/2026-10-01-review-findings.md)
+add a staged/working mismatch guard while retaining that local-hook boundary.
 
 Use the existing two crates. Consolidate policy and filesystem behavior through
 small shared modules and value types. Keep harness installation outside the

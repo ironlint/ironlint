@@ -58,7 +58,8 @@ including dirty and partially staged files; deleted files are absent and
 executable bits are retained. Declared ignored inputs join the manifest and
 identity. It neither stages nor commits. Symlinks, submodules, special files,
 missing declared inputs, nested repository roots, and an artifact store inside
-the source root are rejected. `.git` is excluded. Source, evaluation tree, and
+the source root are rejected. `.git` components are excluded case-insensitively,
+including in declared ignored inputs. Source, evaluation tree, and
 retained artifact manifests are compared around each evaluation. Scratch build
 output goes to `TMPDIR` outside the evaluated tree. A check that persistently
 changes evaluated source invalidates a pass.
@@ -67,6 +68,9 @@ The controller waits for Pi `agent_settled`, `isIdle`, zero queued messages, and
 a final assistant `stop` before capture. It provides confined read/edit/write
 tools and loads no candidate extension or agent instruction files. It supplies
 no Bash tool; edits from other processes are detected by manifest comparison.
+Read/edit/write path checks reject symlinks and multiply linked regular files,
+including hardlinks to protected repository metadata. These checks do not make
+the separate filesystem opens race-proof against concurrent same-account writes.
 Each attempt runs **all** owner-selected acceptance checks, regardless of change
 filters or early feedback. The strict schema-7 consumer checks process status,
 exact IDs, every command outcome/status, and absence of errors and unrun checks.

@@ -132,6 +132,11 @@ fn acceptance_failure_cannot_be_masked_by_a_user_footer() {
     use std::os::unix::fs::PermissionsExt;
     let dir = git_repo();
     init(dir.path(), &["--yes", "--git-hook"]);
+    Command::new("git")
+        .current_dir(dir.path())
+        .args(["add", ".ironlint.yml"])
+        .assert()
+        .success();
     let hook = hook_file(dir.path());
     let original = fs::read_to_string(&hook).unwrap();
     fs::write(
@@ -164,6 +169,11 @@ fn successful_acceptance_runs_and_preserves_the_user_footer() {
     use std::os::unix::fs::PermissionsExt;
     let dir = git_repo();
     init(dir.path(), &["--yes", "--git-hook"]);
+    Command::new("git")
+        .current_dir(dir.path())
+        .args(["add", ".ironlint.yml"])
+        .assert()
+        .success();
     let hook = hook_file(dir.path());
     let prefix = "#!/bin/sh\n# user prefix\n";
     let original = fs::read_to_string(&hook).unwrap();

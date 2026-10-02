@@ -43,7 +43,11 @@ export function confined(root: string, target: string, allowRoot = false): strin
   let current = root
   for (const part of relation.split(sep)) {
     current = join(current, part)
-    try { if (lstatSync(current).isSymbolicLink()) throw new Error(`tool path uses a symlink: ${target}`) }
+    try {
+      const info = lstatSync(current)
+      if (info.isSymbolicLink()) throw new Error(`tool path uses a symlink: ${target}`)
+      if (info.isFile() && info.nlink > 1) throw new Error(`tool path uses a hardlink: ${target}`)
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   }
   return path
