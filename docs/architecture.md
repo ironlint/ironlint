@@ -97,6 +97,25 @@ prevents further commands, stops and reaps the active command, and produces an
 an opt-in CLI stdin-close channel to request this cleanup before its bounded
 forced-stop fallback; command stdin remains closed.
 
+## Adapter packages
+
+The evaluator has no harness registry or compiled adapter artifacts. The
+independently versioned `ironlint-adapters` crate supplies installation and
+ownership to the CLI's `init`/`doctor` facades. It loads scripts, skill bytes,
+and native hook registrations from runtime packages. Updating a package and
+reinstalling it does not rebuild the evaluator. `IRONLINT_ADAPTERS_ROOT` selects
+an explicit package root; installed binaries otherwise look for `adapters/`
+beside the executable, with checkout sources as the development-build fallback.
+
+Pi retains its feedback extension and separately qualified controlled runner.
+Codex and Claude Code use a shared Python subprocess/result layer with small
+native manifests and launchers. PostToolUse adds change feedback after supported
+edits; Stop freshly evaluates the full required check set and requests one
+repair continuation on a violation. Repeated violations, execution errors,
+missing consent, and background work report incomplete acceptance. These hooks
+observe the mutable workspace and remain local workflow aids, without immutable
+candidate or publication authority guarantees.
+
 ## Installation writes
 
 Owned replacements use an exclusively created sibling temporary file, complete
@@ -121,7 +140,8 @@ ownership, unreadable registrations, and inactive Git hooks without executing th
 | Serial evaluation, deadlines, and process execution | `crates/ironlint-core/src/runner/`, `deadline.rs`, `engine/` |
 | Local execution consent | `crates/ironlint-core/src/trust/` |
 | Atomic publication and resource locks | `crates/ironlint-core/src/filesystem.rs`, `filesystem/locks.rs` |
-| Adapter ownership and materialization | `crates/ironlint-core/src/adapter/` |
+| Adapter ownership and materialization | `crates/ironlint-adapters/src/adapter/` |
 | Setup, inspection, diagnostics, and updater | `crates/ironlint-cli/src/commands/` |
+| Native hook execution and strict result validation | `adapters/shared/hooks/` |
 | Pi feedback subprocess lifecycle | `adapters/pi/src/index.ts` |
 | Pi controlled completion and candidate binding | `adapters/pi/src/completion.ts`, `candidate.ts` |

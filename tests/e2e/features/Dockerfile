@@ -2,7 +2,7 @@ FROM rust:1.88-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY adapters ./adapters
+COPY adapters/shared/ironlint-config ./adapters/shared/ironlint-config
 RUN cargo build --locked -p ironlint-cli && cp target/debug/ironlint /ironlint
 
 FROM debian:bookworm-slim
@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 tester
 COPY --from=build /ironlint /usr/local/bin/ironlint
+COPY adapters /usr/local/bin/adapters
 COPY scripts/verify-acceptance.sh /opt/ironlint-tests/verify-acceptance.sh
 COPY tests/e2e/features/driver.sh /usr/local/bin/ironlint-fixture-harness
 COPY tests/e2e/features/test.sh /opt/ironlint-tests/test.sh

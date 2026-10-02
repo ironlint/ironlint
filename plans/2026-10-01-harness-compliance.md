@@ -23,6 +23,178 @@ adapter. Deliver one qualified path before expanding the harness matrix.
 Keep the Rust evaluator independent of Pi and keep live qualification outside
 core release requirements.
 
+## Authorized adapter packaging follow-up — 2026-10-02
+
+The maintainer authorized independent adapter packages in this repository and
+new Codex and Claude Code integrations. Move installation/ownership out of
+`ironlint-core` into an independently versioned `ironlint-adapters` crate.
+Keep `init`/`doctor` as CLI facades. Load adapter scripts, skills, and hook
+registrations from separately distributed files at installation time; no
+harness executable is compiled into the evaluator or CLI. Preserve owned
+legacy cleanup, locks, interrupted-install recovery, foreign files, and user edits.
+Package roots are explicitly selectable with `IRONLINT_ADAPTERS_ROOT`; release
+installs use adjacent adapter files, while development builds use this checkout.
+
+Codex and Claude Code packages provide synchronous post-edit change feedback
+and fresh full acceptance at Stop. They share bounded subprocess execution and
+strict schema-7 validation. Native Stop hooks request repairs; they do not
+claim immutable candidate completion or publication enforcement. Persistent
+failures during an already continued Stop produce an explicit incomplete
+warning and stop automatic repair churn. Pi's controlled completion contract
+and provenance-stamped fixtures remain intact. Unknown mutation paths run all
+change checks; no old pre-edit command or LLM evaluator is restored.
+
+### Decision Inventory
+
+| # | Decision | Explicit or implied? | Where in plan |
+|---|---|---|---|
+| 1 | One repo, independent adapter versions | explicit | Packaging follow-up |
+| 2 | Installer separated from evaluator | explicit | Packaging follow-up |
+| 3 | Scripts and registrations loaded at runtime | explicit | Packaging follow-up |
+| 4 | Package root selected outside hook payload | explicit | Packaging follow-up |
+| 5 | Retain ownership and recovery records | explicit | Packaging follow-up |
+| 6 | Share bounded subprocess/result logic | explicit | Packaging follow-up |
+| 7 | Feedback after edits; full acceptance at Stop | explicit | Packaging follow-up |
+| 8 | Stop continuation is a local workflow aid | explicit | Packaging follow-up |
+| 9 | No persistent pass cache or repair counter | implied | Fresh acceptance and Stop input |
+| 10 | Keep retired-install cleanup | explicit | Packaging follow-up |
+
+### Irreversibility Triage
+
+Rows 1–4 and 6–9 are TWO-WAY: internal packages and native registrations can be
+changed independently; the v1 policy and schema-7 ABI stay fixed. Rows 5 and 10
+are ONE-WAY persisted installation state: preserve existing sidecar framing and
+read old registrations alongside new ones, removing only owned entries.
+
+### Fork Audit
+
+- Migration strategy, rows 5/10: choose expand-contract because “Real data exists
+  in production”; old registrations remain recognizable alongside new events,
+  rejecting big-bang because installed hooks and edited artifacts already exist.
+- Sync/background, rows 6/7: choose sync because “The caller must abort if the
+  work fails”; the Stop response needs acceptance diagnostics. Reject background
+  dispatch because its result could arrive after the turn ends. Bound the run.
+- State storage, row 9: choose the “shortest-lived store that satisfies the
+  requirement”; fresh evaluation and the host's continuation flag need no DB.
+- Config/code, rows 3/4: choose package config because the maintainer must update
+  registrations “without a deploy” of the evaluator; ownership, package version,
+  and reinstall provide audit/rollback. Keep result validation invariants in code.
+- One service/split, rows 1/2: use internal package boundaries, not a network
+  service; independent harness maintenance needs no shared remote transaction.
+- No other fork matches: result transport and local capability claims, row 8.
+
+### Corner Scan
+
+- Unmigratable schema: ABSENT — retain the existing sidecar and owned legacy cleanup.
+- Side effects without idempotency keys: ABSENT — installer hashes and locks preserve idempotent retries.
+- Test-hostile boundaries: ABSENT — pure payload/result functions plus isolated CLI and subprocess tests.
+- Auth/tenancy bolted on later: ABSENT — no service or tenancy; policy consent remains unchanged.
+- Unbounded growth: ABSENT — no pass cache or persistent repair history; subprocess buffers are bounded.
+- Hidden fan-out: ABSENT — one evaluator invocation per delivered hook; no agent fan-out.
+- Shared mutable state across workers: ABSENT — retain installer resource locks; hooks share no approval state.
+- Clock in the logic: ABSENT — subprocess deadlines use one monotonic clock and injectable test limits.
+- Hard external coupling, no failure mode: ABSENT — missing binaries, malformed results, deadlines and missing packages report incomplete work.
+- Pagination later: ABSENT — no list service or unbounded external collection is introduced.
+
+### Pre-Mortem
+
+1. Package updated but installation stayed stale: runtime package/installed hashes
+   differ; doctor reports the difference and reinstall updates owned artifacts.
+2. New write tool never delivers the registered event: no early feedback arrives;
+   Stop still runs all checks, with tool coverage explicitly limited in each README.
+3. Another Stop hook overrides continuation, or background writes race checks:
+   native completion remains host-owned; document local feedback limits and retain
+   the separately qualified Pi candidate-binding runner for stronger claims.
+
+### Verdict
+
+VERDICT: PASS WITH CHANGES
+Required edits: implement runtime package loading and stale-install diagnostics;
+keep full acceptance independent of edit delivery; label native Stop behavior as
+local feedback/repair; test continued Stop failures without a persistent pass cache.
+No human decision or unisolated published contract is introduced by this scope.
+
+### Implementation and validation evidence
+
+Implemented from `025c8fc` and verified before committing. Adapter tags and
+external package publication remain pending. Codex and Claude Code
+archives are independently versioned at 0.1.0. The adapter package workflow
+builds archives without a Rust build. Runtime installation from both extracted
+archives was verified with isolated home/config directories.
+
+- `cargo test --locked --workspace`: passed. The final coverage run also reran
+  the complete workspace, including the registration-preview regression.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo fmt --all --check`: passed.
+- `bash scripts/ci-coverage.sh`: passed; workspace region coverage 93.93%, every
+  Rust file at least 80%.
+- Native hook contracts and self-contained packages: 14 tests passed, including
+  real CLI red/repair, fresh acceptance, consent failures, process limits, and
+  closed-pipe timeouts. Both release archives install both lifecycle events.
+- Pi typecheck and all 63 tests passed with test-file concurrency set to one.
+  Two prior parallel suite runs exceeded the existing two-second child-startup
+  guard. Serial scheduling retains all timing assertions and stamped fixtures.
+- Acceptance verifier conformance and all nine check-recipe fixtures passed.
+- `bash tests/e2e/features/run.sh`: local Docker feature suite passed. The build
+  stage needs only the generic authoring guide; harness scripts are runtime files.
+- Separate review found cross-scope migration, missing Stop diagnostics, and
+  an uncaught closed-pipe timeout. All three were fixed; focused recheck found
+  no remaining issues. The preview now discloses every affected scope/event.
+
+Native compatibility evidence is official hook documentation checked on
+2026-10-02, observed local CLIs (Codex 0.159.1, Claude Code 2.1.207), synthetic
+payload fixtures, and isolated real IronLint integration. No live model session
+or Windows descendant-cleanup qualification is claimed. Pi's prior live-model
+qualification remains pending as recorded in H3; this follow-up does not alter
+that claim. Publication destination remains an operator choice.
+
+### Marketplace distribution follow-up — 2026-10-02
+
+Reconciled `.claude-plugin/marketplace.json` with the independently versioned
+Claude Code plugin. The marketplace keeps its `ironlint-marketplace` identity,
+advances its catalog version to 0.3.0, and maps legacy `ironlint` installs to
+`ironlint-claude-code`. Plugin version 0.1.0 comes from `plugin.json`; the catalog
+does not override it. Descriptions now state post-edit checks and local Stop
+repair, and the owner/homepage match the current `ironlint/ironlint` origin.
+
+The prepared catalog source is `ironlint-claude-code-plugin-0.1.0.zip`, an HTTPS
+release ZIP under
+`adapter-claude-code-v0.1.0`, pinned to the exact locally built archive's SHA-256.
+Both helpers and the authoring skill live inside the selected plugin directory.
+The legacy source-folder catalog reproduced a missing `shared/hooks/hook.py`
+failure when only that directory was cached. The new regression copies only the
+packaged plugin and successfully runs both PostToolUse and Stop hooks.
+
+Focused review also identified archive-root discovery risk: the installer ZIP
+contains both harness and shared directories, while the native archive loader
+expects plugin content at root or inside one wrapper. `pack.py --plugin-only`
+now emits root-level plugin content and omits the shared sibling; the catalog
+selects that artifact. The regular installer ZIP remains unchanged in layout.
+The regression rejects multiple wrappers before simulating the cache copy.
+
+- Native suite: all 16 tests passed, including isolated real CLI integration
+  and native plugin-root/dependency coverage.
+- Catalog pin and packaged name/version/description/homepage were checked
+  against the exact release ZIP; `target/adapter-packages/SHA256SUMS` was refreshed.
+- Packaged plugin manifest validation passed with the observed Claude Code
+  2.1.207 CLI, using temporary HOME/XDG/Claude configuration directories.
+- Archive catalog validation on that old CLI fails at `plugins.0.source`, as
+  expected: the official archive source requires Claude Code 2.1.224+.
+  Marketplace download/installation and live-model qualification remain pending.
+- Workflow YAML parses, catalog edits trigger the package-contract workflow,
+  and `adapter-*` tags bypass the evaluator's cargo-dist release workflow.
+- Separate focused review identified the archive-layout risk above; the
+  plugin-only fix and final artifact recheck have no remaining findings.
+  An isolated Claude Code 2.1.224 listing attempt timed out without output,
+  produced no qualification evidence, and its temporary files were removed.
+
+The maintainer authorized committing and pushing this implementation to
+`origin/main` on 2026-10-02. Adapter tags and release uploads remain pending.
+The GitHub Release URL is a prepared destination; final package publication
+destination remains an operator choice. Upload the exact pinned artifact or
+update the pin after rebuilding it. Older clients can use local registration
+from extracted packages.
+
 ## Resume block
 
 - [x] H0 — Qualify the Pi completion contract and freeze the supported entry point.

@@ -1,59 +1,71 @@
 # AI-tool integrations
 
-IronLint works directly from the command line. Adapters are optional bridges
-that let a coding tool call IronLint while you work. Always run
-`ironlint check --event accept` in the workflow that decides a change is
-complete; an adapter does not replace that full check.
+IronLint runs directly from the CLI. Optional adapter packages connect it to
+coding tools and can be updated independently of the evaluator.
 
-## Available adapter
-
-Pi runs after a supported edit and shows feedback while leaving the edit in
-place.
-
-| Coding tool | What the adapter does | Details |
+| Coding tool | Integration | Details |
 | --- | --- | --- |
-| Pi | Feedback after selected edits, using the policy shown in this guide | [Setup](../../adapters/pi/README.md) |
+| Pi | Post-edit feedback; separate controlled completion runner | [Setup](../../adapters/pi/README.md) |
+| Codex | Post-edit feedback and full acceptance at Stop | [Setup](../../adapters/codex/README.md) |
+| Claude Code | Post-edit feedback and full acceptance at Stop | [Setup](../../adapters/claude-code/README.md) |
 
-The host tool controls which edits it sends to an adapter. Pi feedback is not
-an acceptance decision, so retain a full acceptance check in the workflow that
-decides work is complete.
+Codex and Claude Code native hooks provide local feedback and request repair.
+They do not bind a verdict to an immutable candidate or establish publication
+permission. Keep full acceptance in the workflow that decides work is complete.
+Pi's explicit controlled runner has its own documented candidate contract.
 
-## Install and remove an adapter
+## Install packages and register hooks
 
-Choose a tool explicitly:
+Adapter files ship separately from the Rust binary. Extract an adapter archive
+and select its root (the directory containing `codex/`, `claude-code/`, or `pi/`
+and `shared/`), or use this checkout's `adapters/` directory:
 
 ```sh
-ironlint init --harness pi
-ironlint init --uninstall --harness pi
+export IRONLINT_ADAPTERS_ROOT=/absolute/path/to/adapters
+ironlint init --harness codex
+ironlint init --harness claude-code
+ironlint doctor
 ```
 
-In an interactive terminal, `init` prints the installation plan and asks for a
-line-based confirmation. Detected Pi is selected by default; installing Pi
-when it was not detected requires an affirmative answer. EOF or cancellation
-declines. In a noninteractive run, an explicit `--harness` selection is
-treated as confirmation; use `--dry-run` to preview it instead. Automatic
-noninteractive installation of detected Pi needs `--yes`; installing undetected
-Pi requires explicit `--harness pi`.
+Installed binaries also discover `adapters/` beside their executable. Development
+builds fall back to this checkout; `cargo install` and standalone release binaries
+need separately installed package files. Installation copies owned hook files and
+skills, so running an installed hook does not depend on the package checkout.
+Updating package files and rerunning `init` updates unmodified owned artifacts;
+no Rust rebuild is needed. The [package guide](../../adapters/README.md) covers
+independent versioning, archives, and compatible runtimes.
 
-Removal deletes only files IronLint can identify as its own. If an adapter file
-was edited, replaced, or shares its directory with your files, IronLint leaves
-the affected content for you to review. Your policy and execution-consent record are not
-removed. Use `--git-hook` only when you explicitly want the optional pre-commit
-acceptance hook; uninstall removes its owned marked section while preserving
-an existing user hook.
+Review and trust the policy before execution. Codex additionally requires review
+and trust of non-managed hooks in Codex. `init` never grants that harness consent.
+Native hooks require Python 3.9+ and POSIX process handling on Linux/macOS.
 
-Older IronLint releases could install Claude Code, Codex, and OpenCode
-adapters. New installation is disabled. To remove owned legacy installations,
-run `ironlint init --uninstall --harness all`; cleanup covers both local and
-global adapter locations. Edited or unrecognized files are left for manual
-review, and any cleanup error makes the command fail.
+Interactive setup prints a plan and asks for line-based confirmation. Detected
+harnesses are selected by default; Pi is offered when none is detected. An
+explicit noninteractive `--harness` selection is confirmation; automatic setup
+needs `--yes`. Use `--dry-run` for a read-only preview.
 
-Interactive automatic uninstall lists owned registrations and confirms their
-cleanup. Pi uses the selected scope: project by default, or global with `--global`.
-Legacy cleanup inspects both local and global locations. Use explicit flags for
-scripts; `--dry-run` previews without prompting or writing, and `--yes` confirms
-the printed plan.
+## Ownership, migration, and removal
 
-Run `ironlint doctor` to inspect the local policy, shell, consent, and visible
-adapter files. It can report what exists on disk, but it cannot prove a host
-tool will send every edit through an adapter.
+```sh
+ironlint init --uninstall --harness codex
+ironlint init --uninstall --harness claude-code
+ironlint init --uninstall --harness all
+```
+
+Installation migrates owned old PreToolUse registrations to current post-edit
+and Stop registrations in the current project's local settings and global
+settings when replacing shared native hook files. Foreign handlers remain.
+Other projects' old local registrations require their own reinstall. Native
+adapter removal checks both scopes because they share the same owned files.
+Pi uses the selected scope; OpenCode remains available for owned cleanup only.
+
+Removal requires no package sources. It preserves edited, foreign, symlinked,
+or unrecognized content and reports incomplete cleanup. Policies and execution
+consent remain in place. The optional Git pre-commit hook is installed only with
+`--git-hook`; it retains its separate documented acceptance contract.
+
+Doctor inspects both scopes without executing checks. It reports missing files,
+edited artifacts, old packages/registrations, and missing required Stop hooks.
+When source packages are unavailable it can still inspect ownership and missing
+registrations, but cannot establish whether installed package bytes are current.
+It cannot prove live harness delivery or enforce every write route.

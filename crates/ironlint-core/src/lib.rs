@@ -2,12 +2,12 @@
 
 #![warn(clippy::cognitive_complexity)]
 
-pub mod adapter;
 pub mod config;
 mod deadline;
 pub mod engine;
 #[doc(hidden)]
 pub mod filesystem;
+pub mod hash;
 pub mod runner;
 pub mod trust;
 pub mod verdict;

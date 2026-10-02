@@ -1,0 +1,15 @@
+{
+  "name": "codex",
+  "version": "0.1.0",
+  "ironlint": ">=1.1.0",
+  "harness_baseline": "0.159.1",
+  "capabilities": [
+    "change-feedback",
+    "stop-repair"
+  ],
+  "platforms": [
+    "linux",
+    "darwin"
+  ],
+  "runtime": "python3 >=3.9"
+}

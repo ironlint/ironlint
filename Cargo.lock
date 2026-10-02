@@ -489,6 +489,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironlint-adapters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fs4",
+ "ironlint-core",
+ "nix 0.31.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ironlint-cli"
 version = "1.1.0"
 dependencies = [
@@ -497,6 +510,7 @@ dependencies = [
  "clap",
  "expectrl",
  "insta",
+ "ironlint-adapters",
  "ironlint-core",
  "nix 0.31.3",
  "predicates",

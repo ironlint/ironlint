@@ -70,6 +70,8 @@ on:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
+      # Runtime adapters are released independently of Cargo packages.
+      - '!adapter-*'
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do

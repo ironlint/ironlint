@@ -32,9 +32,12 @@ local Docker feature E2E tests.
 Harness compatibility and external enforcement qualification belong to
 adapter/integration owners, not the core release gate.
 
-Pi is the only adapter available for new installation. Claude Code, Codex, and
-OpenCode registrations remain recognizable only so `init --uninstall` can
-safely remove owned artifacts while preserving user edits. The optional Git
+Pi, Codex, and Claude Code adapters are available for new installation.
+Adapter artifacts are runtime packages under `adapters/`; installation and
+ownership live in `crates/ironlint-adapters`, outside the evaluator. Codex and
+Claude Code provide post-edit feedback and local Stop acceptance/repair, without
+claiming candidate-bound enforcement. OpenCode remains cleanup-only. Owned legacy
+registrations remain removable while preserving user edits. The optional Git
 pre-commit hook is installed only with `--git-hook` and runs complete v1
 acceptance.
 

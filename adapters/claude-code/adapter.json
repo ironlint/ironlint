@@ -1,0 +1,15 @@
+{
+  "name": "claude-code",
+  "version": "0.1.0",
+  "ironlint": ">=1.1.0",
+  "harness_baseline": "2.1.207",
+  "capabilities": [
+    "change-feedback",
+    "stop-repair"
+  ],
+  "platforms": [
+    "linux",
+    "darwin"
+  ],
+  "runtime": "python3 >=3.9"
+}

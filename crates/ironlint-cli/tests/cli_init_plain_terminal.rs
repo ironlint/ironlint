@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use expectrl::{ControlCode, Eof, Session, WaitStatus};
-use ironlint_core::adapter::{sha256_hex, sidecar_path, AdapterSidecar};
+use ironlint_adapters::{sha256_hex, sidecar_path, AdapterSidecar};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;

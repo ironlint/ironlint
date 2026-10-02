@@ -1,4 +1,4 @@
-use ironlint_core::adapter::{
+use ironlint_adapters::{
     all_harnesses, sidecar_path, status, status_paths, AdapterEnv, Harness, HarnessStatus, Scope,
     StatusPaths,
 };
@@ -47,7 +47,7 @@ fn adapter_verdict(s: &HarnessStatus) -> (Status, String, Option<String>) {
     } else if s.current == Some(false) {
         (
             Status::Warn,
-            "hook artifact outdated".to_string(),
+            "hook package or registration outdated".to_string(),
             Some("re-run `ironlint init` to update".to_string()),
         )
     } else {
@@ -165,8 +165,8 @@ fn scope_name(scope: Scope) -> &'static str {
     }
 }
 
-fn remediation(harness: &Harness, scope: Scope, failed: bool) -> String {
-    let operation = if harness.installable {
+fn remediation(harness: &Harness, scope: Scope, failed: bool, legacy: bool) -> String {
+    let operation = if harness.installable && !legacy {
         ""
     } else {
         "--uninstall "
@@ -189,8 +189,12 @@ fn remediation(harness: &Harness, scope: Scope, failed: bool) -> String {
 
 fn inspect_scope(harness: &Harness, env: &AdapterEnv, scope: Scope) -> Option<Inspection> {
     let paths = status_paths(harness, env, scope);
+    let mut legacy = false;
     let mut row = match status(harness, env, scope) {
-        Ok(state) => adapter_check(&state)?,
+        Ok(state) => {
+            legacy = state.legacy_registration.is_some();
+            adapter_check(&state)?
+        }
         Err(error) => CheckResult {
             name: harness.name,
             status: Status::Fail,
@@ -198,7 +202,7 @@ fn inspect_scope(harness: &Harness, env: &AdapterEnv, scope: Scope) -> Option<In
             remediation: None,
         },
     };
-    if !harness.installable {
+    if !harness.installable || legacy {
         row.detail
             .push_str("; unsupported adapter retained for cleanup");
         if row.status == Status::Pass {
@@ -206,7 +210,12 @@ fn inspect_scope(harness: &Harness, env: &AdapterEnv, scope: Scope) -> Option<In
         }
     }
     if row.status != Status::Pass {
-        row.remediation = Some(remediation(harness, scope, row.status == Status::Fail));
+        row.remediation = Some(remediation(
+            harness,
+            scope,
+            row.status == Status::Fail,
+            legacy,
+        ));
     }
     let registration = paths
         .registration

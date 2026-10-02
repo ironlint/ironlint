@@ -3,7 +3,7 @@ use super::render::{render_plan, HarnessPlan, Source};
 use super::select;
 use super::Options;
 use anyhow::{anyhow, Result};
-use ironlint_core::adapter::{
+use ironlint_adapters::{
     all_harnesses, detect, install, install_skill, plan_install, plan_uninstall, status, uninstall,
     uninstall_skill, AdapterEnv, Harness, HarnessKind, InstallResult, PlanStep, Scope,
 };
@@ -165,8 +165,8 @@ fn has_owned_install(harness: &Harness, env: &AdapterEnv, scope: Scope) -> Resul
     for step in plan_uninstall(harness, env, scope) {
         if let PlanStep::Skill { path } = step {
             for record in [
-                ironlint_core::adapter::sidecar_path(&path),
-                ironlint_core::adapter::pending_sidecar_path(&path),
+                ironlint_adapters::sidecar_path(&path),
+                ironlint_adapters::pending_sidecar_path(&path),
             ] {
                 if ironlint_core::filesystem::regular_file(&record)?.is_some() {
                     return Ok(true);
@@ -231,7 +231,7 @@ fn build_plans(
 /// releases. Their v1 uninstall removes owned artifacts from both locations so
 /// a global registration cannot keep calling a deleted command.
 fn operation_scopes(harness: &Harness, requested: Scope, uninstalling: bool) -> Vec<Scope> {
-    if uninstalling && !harness.installable {
+    if uninstalling && (!harness.installable || matches!(harness.kind, HarnessKind::JsonHook(_))) {
         vec![Scope::Local, Scope::Global]
     } else {
         vec![requested]
@@ -303,8 +303,9 @@ fn apply(selected: &[(String, Source)], env: &AdapterEnv, scope: Scope, opts: &O
         let Some(h) = registry.iter().find(|h| h.name == *name) else {
             continue;
         };
-        for operation_scope in operation_scopes(h, scope, opts.uninstall) {
-            let label = if opts.uninstall && !h.installable {
+        let scopes = operation_scopes(h, scope, opts.uninstall);
+        for operation_scope in &scopes {
+            let label = if scopes.len() > 1 {
                 format!(
                     "{} ({})",
                     h.name,
@@ -317,9 +318,9 @@ fn apply(selected: &[(String, Source)], env: &AdapterEnv, scope: Scope, opts: &O
                 h.name.to_string()
             };
             let outcome = if opts.uninstall {
-                uninstall(h, env, operation_scope)
+                uninstall(h, env, *operation_scope)
             } else {
-                install(h, env, operation_scope)
+                install(h, env, *operation_scope)
             };
             match outcome {
                 Ok(o) => {
@@ -333,7 +334,7 @@ fn apply(selected: &[(String, Source)], env: &AdapterEnv, scope: Scope, opts: &O
                     println!("  {label:<12} failed: {e:#}");
                 }
             }
-            let (skill_ok, skill_fail) = run_skill_step(h, env, operation_scope, opts, &label);
+            let (skill_ok, skill_fail) = run_skill_step(h, env, *operation_scope, opts, &label);
             any_ok |= skill_ok;
             any_fail |= skill_fail;
         }
@@ -470,7 +471,7 @@ mod tests {
     #[test]
     fn select_explicit_all_returns_every_harness() {
         let names = select_harness_names(&["all".to_string()], false).unwrap();
-        assert_eq!(names, vec!["pi"]);
+        assert_eq!(names, vec!["claude-code", "codex", "pi"]);
         let cleanup = select_harness_names(&["all".to_string()], true).unwrap();
         assert_eq!(cleanup, vec!["claude-code", "codex", "pi", "opencode"]);
     }
@@ -486,7 +487,7 @@ mod tests {
 
     #[test]
     fn format_outcome_covers_every_variant() {
-        use ironlint_core::adapter::InstallResult::*;
+        use ironlint_adapters::InstallResult::*;
         assert!(format_outcome("codex", &Installed, "h", false)[0].contains("installed"));
         assert!(format_outcome("codex", &Installed, "h", true)[0].contains("removed"));
         assert!(format_outcome("pi", &Updated, "h", false)[0].contains("updated"));
@@ -501,7 +502,7 @@ mod tests {
 
     #[test]
     fn format_skill_outcome_covers_variants() {
-        use ironlint_core::adapter::InstallResult::*;
+        use ironlint_adapters::InstallResult::*;
         assert!(format_skill_outcome("pi", &Installed, false)[0].contains("skill installed"));
         assert!(format_skill_outcome("pi", &Installed, true)[0].contains("skill removed"));
         assert!(format_skill_outcome("pi", &Updated, false)[0].contains("skill updated"));

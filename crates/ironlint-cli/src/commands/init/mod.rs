@@ -84,7 +84,7 @@ pub fn run(dir: &Path, opts: &Options) -> Result<i32> {
         return Ok(0);
     }
 
-    let env = ironlint_core::adapter::AdapterEnv::from_process(dir.to_path_buf())?;
+    let env = ironlint_adapters::AdapterEnv::from_process(dir.to_path_buf())?;
     onboard::run_hook_phase(&env, opts)
 }
 

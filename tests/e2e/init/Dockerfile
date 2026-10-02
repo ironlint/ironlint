@@ -6,16 +6,14 @@
 # can't run in a Linux container. We therefore compile a Linux `ironlint` from
 # source in a build stage, then drop it into a minimal runtime stage.
 #
-# Build context MUST be the repo root: the adapter registry embeds the
-# adapters/<harness>/ artifacts via include_str!, so adapters/ has to be present
-# at compile time. The COPYs below are ordered so editing the test scripts does
-# not invalidate the (slow) cargo build layer.
+# Adapter packages are runtime inputs. Editing them does not invalidate the
+# evaluator build layer; the runtime image receives the current packages.
 
 FROM rust:1.88-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY adapters ./adapters
+COPY adapters/shared/ironlint-config ./adapters/shared/ironlint-config
 RUN cargo build --locked --release -p ironlint-cli && cp target/release/ironlint /ironlint
 
 # The test never executes a live harness. Git is needed by doctor's optional
@@ -25,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 tester
 COPY --from=build /ironlint /usr/local/bin/ironlint
+COPY adapters /usr/local/bin/adapters
 COPY tests/e2e/init/drive.sh /usr/local/bin/drive.sh
 USER tester
 ENTRYPOINT ["bash", "/usr/local/bin/drive.sh"]

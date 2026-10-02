@@ -26,7 +26,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts test/compliance/*.test.ts"
+    "test": "node --experimental-strip-types --test --test-concurrency=1 test/*.test.ts test/compliance/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

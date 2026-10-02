@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" post-tool-use",
+            "timeout": 610
+          }
+        ],
+        "matcher": "^(Edit|Write|MultiEdit|NotebookEdit)$"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" stop",
+            "timeout": 610
+          }
+        ]
+      }
+    ]
+  }
+}

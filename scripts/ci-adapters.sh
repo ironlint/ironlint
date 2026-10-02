@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pi is the supported v1 adapter. Its suite exercises completed-edit feedback.
+# Harness qualification is separate from the core release gate.
 
 cd "$(dirname "$0")/.."
 
@@ -17,6 +17,10 @@ mkdir -p target/ironlint-bin
 cp target/debug/ironlint target/ironlint-bin/ironlint
 export PATH="$(pwd)/target/ironlint-bin:${PATH}"
 export IRONLINT_TEST_BIN="$(pwd)/target/ironlint-bin/ironlint"
+export PYTHONDONTWRITEBYTECODE=1
+
+echo "ci-adapters: native hook contracts and independent packages (python3)…"
+python3 -m unittest discover -s adapters/shared/test -v
 
 echo "ci-adapters: pi suite (node)…"
 if ! command -v node >/dev/null 2>&1; then

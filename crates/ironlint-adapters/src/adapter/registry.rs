@@ -1,15 +1,13 @@
-use crate::adapter::{AdapterEnv, Harness, HarnessKind};
+use crate::adapter::{AdapterEnv, Harness, HarnessKind, Source};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 // Cleanup-only harnesses retain inert bytes so the generic ownership machinery
 // can still identify their former artifact names without shipping executable
 // legacy behavior.
-const CLEANUP_HOOK: &str = "#!/bin/sh\n# cleanup-only IronLint artifact\nexit 1\n";
 const CLEANUP_PLUGIN: &str = "// cleanup-only IronLint artifact\nexport {};\n";
-const PI_PLUGIN: &str = include_str!("../../../../adapters/pi/src/index.ts");
-const IRONLINT_CONFIG_SKILL: &str =
-    include_str!("../../../../adapters/shared/ironlint-config/SKILL.md");
+const PI_PLUGIN: Source = Source::Package("pi/src/index.ts");
+const IRONLINT_CONFIG_SKILL: Source = Source::Package("shared/ironlint-config/SKILL.md");
 
 /// Skill name and install-dir leaf for the authoring skill.
 pub const SKILL_NAME: &str = "ironlint-config";
@@ -21,7 +19,8 @@ pub struct JsonHookSpec {
     pub array_key: &'static str,
     pub entry_arg: &'static str,
     pub primary: &'static str,
-    pub files: &'static [(&'static str, &'static str)],
+    pub files: &'static [(&'static str, Source)],
+    pub manifest: Option<Source>,
     pub build_entry: fn(&str) -> Value,
 }
 
@@ -30,7 +29,7 @@ pub struct PluginSpec {
     pub dir_local: fn(&AdapterEnv) -> Option<PathBuf>,
     pub dir_global: fn(&AdapterEnv) -> Option<PathBuf>,
     pub filename: &'static str,
-    pub source: &'static str,
+    pub source: Source,
     pub detect: fn(&AdapterEnv) -> bool,
 }
 
@@ -39,7 +38,7 @@ pub struct PluginSpec {
 pub struct SkillSpec {
     pub dir_local: fn(&AdapterEnv) -> PathBuf,
     pub dir_global: fn(&AdapterEnv) -> PathBuf,
-    pub source: &'static str,
+    pub source: Source,
 }
 
 // --- per-harness entry builders (also unit-tested directly) ------------------
@@ -65,20 +64,35 @@ pub(crate) fn codex_build_entry(command: &str) -> Value {
 const CLAUDE: JsonHookSpec = JsonHookSpec {
     settings_local: |e| Some(e.project_root.join(".claude").join("settings.local.json")),
     settings_global: |e| e.home.join(".claude").join("settings.json"),
-    array_key: "PreToolUse",
-    entry_arg: "pre-tool-use",
+    array_key: "PostToolUse",
+    entry_arg: "post-tool-use",
     primary: "hook.sh",
-    files: &[("hook.sh", CLEANUP_HOOK)],
+    files: &[
+        ("hook.sh", Source::Package("claude-code/hooks/hook.sh")),
+        ("hook.py", Source::Package("shared/hooks/hook.py")),
+        ("process.py", Source::Package("shared/hooks/process.py")),
+        (
+            "hooks.json",
+            Source::Package("claude-code/hooks/hooks.json"),
+        ),
+    ],
+    manifest: Some(Source::Package("claude-code/hooks/hooks.json")),
     build_entry: claude_build_entry,
 };
 
 const CODEX: JsonHookSpec = JsonHookSpec {
     settings_local: |e| Some(e.project_root.join(".codex").join("hooks.json")),
     settings_global: |e| e.home.join(".codex").join("hooks.json"),
-    array_key: "PreToolUse",
-    entry_arg: "pre-tool-use",
+    array_key: "PostToolUse",
+    entry_arg: "post-tool-use",
     primary: "hook.sh",
-    files: &[("hook.sh", CLEANUP_HOOK)],
+    files: &[
+        ("hook.sh", Source::Package("codex/hooks/hook.sh")),
+        ("hook.py", Source::Package("shared/hooks/hook.py")),
+        ("process.py", Source::Package("shared/hooks/process.py")),
+        ("hooks.json", Source::Package("codex/hooks/hooks.json")),
+    ],
+    manifest: Some(Source::Package("codex/hooks/hooks.json")),
     build_entry: codex_build_entry,
 };
 
@@ -94,7 +108,7 @@ const OPENCODE: PluginSpec = PluginSpec {
     dir_local: |e| Some(e.project_root.join(".opencode").join("plugins")),
     dir_global: |_| None, // opencode plugins are project-scoped (per adapter README)
     filename: "ironlint.ts",
-    source: CLEANUP_PLUGIN,
+    source: Source::Inline(CLEANUP_PLUGIN),
     detect: |e| {
         e.config_home.join("opencode").is_dir() || e.project_root.join(".opencode").is_dir()
     },
@@ -129,14 +143,14 @@ pub fn all_harnesses() -> Vec<Harness> {
             kind: HarnessKind::JsonHook(CLAUDE),
             restart_hint: "Reload Claude Code (or restart) — it picks up settings.json hooks.",
             skill: CLAUDE_SKILL,
-            installable: false,
+            installable: true,
         },
         Harness {
             name: "codex",
             kind: HarnessKind::JsonHook(CODEX),
             restart_hint: "Restart Codex, then review+trust the ironlint hook when Codex prompts (non-managed hooks require trust).",
             skill: CODEX_SKILL,
-            installable: false,
+            installable: true,
         },
         Harness {
             name: "pi",
@@ -158,7 +172,7 @@ pub fn all_harnesses() -> Vec<Harness> {
 /// Whether `harness` looks installed on this machine.
 ///
 /// Keyed on the harness **name**, not `array_key`: claude-code and codex
-/// both register a `PreToolUse` hook (see `CLAUDE`/`CODEX` above), so a
+/// both register a `PostToolUse` hook (see `CLAUDE`/`CODEX` above), so a
 /// dispatch on `array_key` alone can no longer distinguish them.
 pub(crate) fn is_detected(harness: &Harness, env: &AdapterEnv) -> bool {
     let owned_artifacts = crate::adapter::adapters_dir(env)
@@ -203,16 +217,25 @@ mod tests {
     }
 
     #[test]
-    fn embedded_artifacts_are_nonempty() {
+    fn runtime_artifacts_are_nonempty() {
         for h in all_harnesses() {
             match &h.kind {
                 HarnessKind::JsonHook(s) => {
                     assert!(!s.files.is_empty(), "{} has no files", h.name);
                     for (name, bytes) in s.files {
-                        assert!(!bytes.is_empty(), "{}/{} empty", h.name, name);
+                        assert!(
+                            !bytes.read().unwrap().is_empty(),
+                            "{}/{} empty",
+                            h.name,
+                            name
+                        );
                     }
                 }
-                HarnessKind::Plugin(p) => assert!(!p.source.is_empty(), "{} plugin empty", h.name),
+                HarnessKind::Plugin(p) => assert!(
+                    !p.source.read().unwrap().is_empty(),
+                    "{} plugin empty",
+                    h.name
+                ),
             }
         }
     }
@@ -271,9 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn claude_and_codex_share_pre_tool_use_but_detect_independently() {
+    fn claude_and_codex_share_post_tool_use_but_detect_independently() {
         // Regression guard: claude-code and codex both register a
-        // PreToolUse hook now, so `is_detected` must key off the harness
+        // PostToolUse hook now, so `is_detected` must key off the harness
         // name, not `array_key` — otherwise claude-code would be (mis)detected
         // via ~/.codex, or vice versa.
         let harnesses = all_harnesses();
@@ -281,8 +304,8 @@ mod tests {
         let codex = harnesses.iter().find(|h| h.name == "codex").unwrap();
         match (&claude.kind, &codex.kind) {
             (HarnessKind::JsonHook(c), HarnessKind::JsonHook(r)) => {
-                assert_eq!(c.array_key, "PreToolUse");
-                assert_eq!(r.array_key, "PreToolUse");
+                assert_eq!(c.array_key, "PostToolUse");
+                assert_eq!(r.array_key, "PostToolUse");
             }
             _ => panic!("expected both to be JsonHook"),
         }
@@ -363,7 +386,9 @@ mod tests {
     fn every_harness_ships_the_same_skill_source() {
         for h in all_harnesses() {
             assert!(
-                h.skill.source.contains("name: ironlint-config"),
+                String::from_utf8(h.skill.source.read().unwrap())
+                    .unwrap()
+                    .contains("name: ironlint-config"),
                 "{} skill source wrong",
                 h.name
             );
@@ -371,26 +396,15 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_only_harnesses_do_not_ship_active_hook_files() {
-        // These harnesses are retained only so uninstall can recognize their
-        // former registrations. Shipping active hook files would revive them.
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../adapters");
-        for (harness, subdir) in [("claude-code", "hooks"), ("codex", "hooks")] {
-            let dir = root.join(harness).join(subdir);
-            let spec = match &all_harnesses()
-                .into_iter()
-                .find(|h| h.name == harness)
-                .unwrap()
-                .kind
-            {
-                HarnessKind::JsonHook(s) => *s,
-                _ => unreachable!(),
-            };
-            assert!(
-                !dir.exists(),
-                "retired adapters/{harness}/{subdir} still ships hooks"
-            );
-            assert!(spec.files.iter().all(|(_, source)| *source == CLEANUP_HOOK));
-        }
+    fn opencode_remains_cleanup_only() {
+        let h = all_harnesses()
+            .into_iter()
+            .find(|h| h.name == "opencode")
+            .unwrap();
+        assert!(!h.installable);
+        let HarnessKind::Plugin(spec) = h.kind else {
+            panic!("plugin expected")
+        };
+        assert_eq!(spec.source.read().unwrap(), CLEANUP_PLUGIN.as_bytes());
     }
 }

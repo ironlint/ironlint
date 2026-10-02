@@ -1,5 +1,5 @@
 use super::DoctorContext;
-use ironlint_core::adapter::AdapterEnv;
+use ironlint_adapters::AdapterEnv;
 use std::path::Path;
 
 mod adapters;

@@ -1,0 +1,45 @@
+name: Adapter packages
+
+on:
+  pull_request:
+    paths:
+      - 'adapters/**'
+      - '.claude-plugin/marketplace.json'
+      - '.github/workflows/adapter-packages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-contracts:
+    name: Native hook contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Hooks, bounded execution, and standalone packages
+        run: python3 -m unittest discover -s adapters/shared/test -v
+
+  packages:
+    name: Package ${{ matrix.harness }} independently
+    runs-on: ubuntu-latest
+    needs: native-contracts
+    strategy:
+      matrix:
+        harness: [codex, claude-code, pi]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Build adapter archive without building the evaluator
+        run: python3 adapters/shared/pack.py '${{ matrix.harness }}' --output target/adapter-packages
+      - name: Build native plugin archive with content at the ZIP root
+        if: matrix.harness != 'pi'
+        run: python3 adapters/shared/pack.py '${{ matrix.harness }}' --plugin-only --output target/adapter-packages
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ironlint-${{ matrix.harness }}
+          path: target/adapter-packages/*.zip

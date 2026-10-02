@@ -1,7 +1,7 @@
 //! Pretty-printer for the `ironlint init` onboarding plan. Pure: takes structured
 //! `PlanStep`s and returns the tree string. Color is TTY-gated by the caller and
 //! passed in as `color`; when false, output contains no ANSI escapes.
-use ironlint_core::adapter::{AdapterEnv, PlanStep};
+use ironlint_adapters::{AdapterEnv, PlanStep};
 use std::path::Path;
 
 #[derive(Clone, Copy)]
@@ -128,7 +128,7 @@ fn short_path(path: &Path, env: &AdapterEnv) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ironlint_core::adapter::{AdapterEnv, PlanStep};
+    use ironlint_adapters::{AdapterEnv, PlanStep};
     use std::path::PathBuf;
 
     fn env() -> AdapterEnv {

@@ -1,6 +1,6 @@
 use super::script_files::{self, ScriptFile};
-use crate::adapter::sha256_digest_hex;
 use crate::deadline;
+use crate::hash::sha256_digest_hex;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

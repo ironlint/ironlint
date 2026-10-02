@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 ironlint-core = { path = "../ironlint-core" }
+ironlint-adapters = { path = "../ironlint-adapters" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true

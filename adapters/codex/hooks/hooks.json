@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/hook.sh\" post-tool-use",
+            "timeout": 610
+          }
+        ],
+        "matcher": "^(apply_patch|Edit|Write)$"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/hook.sh\" stop",
+            "timeout": 610
+          }
+        ]
+      }
+    ]
+  }
+}

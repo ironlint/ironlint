@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "filesystem/locks.rs"]
 mod locks;
 pub use locks::ResourceLocks;
 
@@ -190,4 +191,5 @@ fn checkpoint(stage: Stage, path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[path = "filesystem/tests.rs"]
 pub(crate) mod tests;

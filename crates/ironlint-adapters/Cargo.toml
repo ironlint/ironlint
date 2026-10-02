@@ -1,0 +1,22 @@
+[package]
+name = "ironlint-adapters"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ironlint-core = { path = "../ironlint-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+fs4.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "process"] }
+
+[lints]
+workspace = true

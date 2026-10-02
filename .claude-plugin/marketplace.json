@@ -2,19 +2,26 @@
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "ironlint-marketplace",
   "owner": {
-    "name": "dynamik-dev"
+    "name": "IronLint",
+    "url": "https://github.com/ironlint/ironlint"
   },
   "metadata": {
-    "description": "IronLint — policy-enforcement pipeline for AI coding agents.",
-    "version": "0.2.0"
+    "description": "IronLint project checks for AI coding workflows.",
+    "version": "0.3.0"
+  },
+  "renames": {
+    "ironlint": "ironlint-claude-code"
   },
   "plugins": [
     {
-      "name": "ironlint",
-      "source": "./adapters/claude-code",
-      "description": "Policy-enforcement pipeline for AI coding agents. Hybrid script+ast rule engines, trust gate, capability sandbox. Claude Code adapter.",
-      "version": "0.2.0",
-      "homepage": "https://github.com/christopherarter/ironlint",
+      "name": "ironlint-claude-code",
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/ironlint/ironlint/releases/download/adapter-claude-code-v0.1.0/ironlint-claude-code-plugin-0.1.0.zip",
+        "sha256": "7fd708d33f2e1785d3ee8ed52b194f52c7e9feb1338f949311f8a2f48f122164"
+      },
+      "description": "Run project checks after Claude Code edits and request repairs at Stop.",
+      "homepage": "https://github.com/ironlint/ironlint",
       "category": "development",
       "strict": true
     }

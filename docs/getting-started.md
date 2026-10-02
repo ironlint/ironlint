@@ -13,6 +13,8 @@ git clone https://github.com/ironlint/ironlint.git
 cd ironlint
 cargo install --locked --path crates/ironlint-cli
 ironlint --version
+# Optional: install adapter files from the checkout.
+export IRONLINT_ADAPTERS_ROOT="$(pwd)/adapters"
 ```
 
 IronLint uses POSIX `sh` to run policy commands. On Windows, use Git Bash or
@@ -68,4 +70,5 @@ See [writing checks](writing-checks/README.md) for command behavior and
 [execution consent](security/trust.md) for the security boundary. Optional
 [AI-tool integrations](adapters/README.md) are separate from this direct CLI
 workflow. `ironlint init` can scaffold this v1 policy and optionally install
-the Pi feedback adapter.
+a supported coding-tool adapter. Adapter packages ship separately; see the
+integration guide for package-root setup.

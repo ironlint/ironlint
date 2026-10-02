@@ -46,13 +46,15 @@ local setup. `schema` prints authoring help.
 ## Create a policy and install optional integration
 
 ```text
-ironlint init [--dir DIR] [--harness pi] [--git-hook]
+ironlint init [--dir DIR] [--harness pi|codex|claude-code|all] [--git-hook]
               [--yes] [--dry-run]
-ironlint init --uninstall [--harness pi|all] [--dir DIR]
+ironlint init --uninstall [--harness pi|codex|claude-code|all] [--dir DIR]
 ```
 
-`init` creates a `version: 1` starter policy unless one already exists. The Pi
-adapter is the only adapter available for new installation. `--git-hook`
+`init` creates a `version: 1` starter policy unless one already exists. Pi, Codex, and
+Claude Code adapters are available for installation from runtime packages.
+Set `IRONLINT_ADAPTERS_ROOT` to their extracted package root, or place `adapters/`
+beside the executable; development builds use this checkout by default. `--git-hook`
 explicitly adds a pre-commit hook that requires a complete trusted acceptance
 pass; ordinary `init` does not change Git hooks. Uninstall removes owned files
 and registrations while preserving edited or unrelated user content. See
@@ -71,11 +73,12 @@ independent enforcement boundary. `--no-verify` still bypasses it. Re-run
 `ironlint init --git-hook` to update an existing installation.
 
 Interactive setup prints the plan and uses a plain line confirmation. Detected
-Pi is the default; undetected Pi requires an affirmative answer. EOF declines.
+Detected harnesses are selected by default; interactive setup offers Pi when
+none is detected, requiring an affirmative answer. EOF declines.
 `--yes` confirms, explicit noninteractive `--harness` selects the requested
 integration, and `--dry-run` previews without input or writes. Interactive
 automatic uninstall confirms owned registrations: Pi in the requested scope
-(project by default, `--global` for global), legacy adapters in both scopes.
+(project by default, `--global` for global), shared Codex/Claude hook registrations and retired adapters in both scopes.
 Automatic noninteractive setup with detected Pi needs `--yes` or explicit
 `--harness pi`; without either it prints a rerun hint. Installing undetected Pi
 noninteractively requires explicit `--harness pi`.

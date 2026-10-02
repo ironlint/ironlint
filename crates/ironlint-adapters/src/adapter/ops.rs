@@ -1,11 +1,11 @@
 use crate::adapter::materialize::{atomic_write, backup_once, read_sidecar, sha256_hex};
 use crate::adapter::ownership::{install_files, remove_owned_files};
+use crate::adapter::package::hook_entries;
 use crate::adapter::plan::PlanStep;
 use crate::adapter::registry::{JsonHookSpec, PluginSpec, SkillSpec};
 use crate::adapter::SKILL_NAME;
 use crate::adapter::{
-    adapters_dir, remove_from_hook_array, sync_hook_array, AdapterEnv, Harness, HarnessKind,
-    PatchResult, Scope,
+    adapters_dir, remove_from_hook_array, sync_hook_array, AdapterEnv, Harness, HarnessKind, Scope,
 };
 use crate::filesystem::ResourceLocks;
 use anyhow::{Context, Result};
@@ -33,6 +33,7 @@ pub struct HarnessStatus {
     pub detected: bool,
     pub installed: bool,
     pub registered: bool,
+    pub legacy_registration: Option<&'static str>,
     pub intact: Option<bool>,
     pub current: Option<bool>,
 }
@@ -122,35 +123,77 @@ fn install_jsonhook(
 ) -> Result<InstallResult> {
     let dir = adapters_dir(env).join(name);
     let primary_path = dir.join(spec.primary);
-    let command = format!("\"{}\" {}", primary_path.display(), spec.entry_arg);
-    let marker = format!("{}", dir.display());
-    let settings = settings_path(spec, env, scope);
-    let _locks = ResourceLocks::acquire(&[&dir, &settings])?;
-    let sources: Vec<_> = spec
+    let command = format!(
+        "'{}' {}",
+        primary_path.to_string_lossy().replace('\'', "'\"'\"'"),
+        spec.entry_arg
+    );
+    let entries = if let Some(manifest) = spec.manifest {
+        hook_entries(manifest, &primary_path)?
+    } else {
+        vec![(spec.array_key.to_string(), (spec.build_entry)(&command))]
+    };
+    let bytes: Vec<_> = spec
         .files
         .iter()
-        .map(|(name, bytes)| (*name, bytes.as_bytes()))
+        .map(|(name, source)| source.read().map(|bytes| (*name, bytes)))
+        .collect::<Result<_>>()?;
+    let sources: Vec<_> = bytes
+        .iter()
+        .map(|(name, bytes)| (*name, bytes.as_slice()))
         .collect();
+    let marker = format!("{}", dir.display());
+    let settings = settings_path(spec, env, scope);
+    let paths = registration_paths(spec, env, scope);
+    let mut resources: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    resources.push(&dir);
+    let _locks = ResourceLocks::acquire(&resources)?;
+    let mut values = paths
+        .iter()
+        .map(|path| load_settings(path).map(|value| (path, value)))
+        .collect::<Result<Vec<_>>>()?;
     if let skipped @ InstallResult::Skipped(_) = install_files(&dir, &sources, true)? {
         return Ok(skipped);
     }
-
-    let mut value = load_settings(&settings)?;
-    let entry = (spec.build_entry)(&command);
-    let patch = sync_hook_array(&mut value, spec.array_key, entry, &marker);
-    Ok(match patch {
-        PatchResult::AlreadyPresent => InstallResult::AlreadyPresent,
-        PatchResult::Added => {
-            write_settings(&settings, &value)?;
-            InstallResult::Installed
+    let mut changed = false;
+    for (path, value) in &mut values {
+        if **path != settings && !value_has_marker(value, &marker) {
+            continue;
         }
+        let before = value.clone();
+        remove_from_hook_array(value, "PreToolUse", &marker);
+        for (event, entry) in &entries {
+            sync_hook_array(value, event, entry.clone(), &marker);
+        }
+        if *value != before {
+            write_settings(path, value)?;
+            changed = true;
+        }
+    }
+    Ok(if changed {
+        InstallResult::Installed
+    } else {
+        InstallResult::AlreadyPresent
+    })
+}
+
+fn value_has_marker(value: &Value, marker: &str) -> bool {
+    ["PreToolUse", "PostToolUse", "Stop"].iter().any(|event| {
+        value
+            .get("hooks")
+            .and_then(|hooks| hooks.get(event))
+            .is_some_and(|entries| entries.to_string().contains(marker))
     })
 }
 
 fn install_plugin(spec: &PluginSpec, env: &AdapterEnv, scope: Scope) -> Result<InstallResult> {
     let dir = plugin_dir(spec, env, scope);
     let _locks = ResourceLocks::acquire(&[&dir])?;
-    install_files(&dir, &[(spec.filename, spec.source.as_bytes())], false)
+    install_files(
+        &dir,
+        &[(spec.filename, spec.source.read()?.as_slice())],
+        false,
+    )
 }
 
 fn skill_base(spec: &SkillSpec, env: &AdapterEnv, scope: Scope) -> PathBuf {
@@ -173,7 +216,7 @@ pub fn install_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<Inst
     let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
     let file = dir.join("SKILL.md");
     let _locks = ResourceLocks::acquire(&[&dir])?;
-    let result = install_skill_file(&file, &dir, h.skill.source.as_bytes())?;
+    let result = install_skill_file(&file, &dir, h.skill.source.read()?.as_slice())?;
     Ok(InstallOutcome {
         harness: h.name,
         result,
@@ -197,6 +240,16 @@ pub fn uninstall_skill(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<In
     })
 }
 
+fn registration_paths(spec: &JsonHookSpec, env: &AdapterEnv, scope: Scope) -> Vec<PathBuf> {
+    let mut paths = vec![settings_path(spec, env, scope), (spec.settings_global)(env)];
+    if let Some(local) = (spec.settings_local)(env) {
+        paths.push(local);
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 // --- plan (preview; writes nothing) ------------------------------------------
 
 /// Full onboarding footprint for `h`: hook/plugin file(s), the settings patch
@@ -210,10 +263,21 @@ pub fn plan_install(h: &Harness, env: &AdapterEnv, scope: Scope) -> Vec<PlanStep
                 .iter()
                 .map(|(f, _)| PlanStep::Hook { path: dir.join(f) })
                 .collect();
-            v.push(PlanStep::Patch {
-                path: settings_path(spec, env, scope),
-                key: spec.array_key,
-            });
+            let requested = settings_path(spec, env, scope);
+            let marker = dir.to_string_lossy();
+            for path in registration_paths(spec, env, scope) {
+                if path != requested
+                    && !load_settings(&path).is_ok_and(|value| value_has_marker(&value, &marker))
+                {
+                    continue;
+                }
+                for key in ["PreToolUse", "PostToolUse", "Stop"] {
+                    v.push(PlanStep::Patch {
+                        path: path.clone(),
+                        key,
+                    });
+                }
+            }
             v
         }
         HarnessKind::Plugin(spec) => vec![PlanStep::Plugin {
@@ -231,15 +295,18 @@ pub fn plan_install(h: &Harness, env: &AdapterEnv, scope: Scope) -> Vec<PlanStep
 /// (Plugin), the settings patch (JsonHook), and the skill directory.
 pub fn plan_uninstall(h: &Harness, env: &AdapterEnv, scope: Scope) -> Vec<PlanStep> {
     let mut steps = match &h.kind {
-        HarnessKind::JsonHook(spec) => vec![
-            PlanStep::Hook {
+        HarnessKind::JsonHook(spec) => {
+            let mut steps = vec![PlanStep::Hook {
                 path: adapters_dir(env).join(h.name),
-            },
-            PlanStep::Patch {
-                path: settings_path(spec, env, scope),
-                key: spec.array_key,
-            },
-        ],
+            }];
+            for key in ["PreToolUse", "PostToolUse", "Stop"] {
+                steps.push(PlanStep::Patch {
+                    path: settings_path(spec, env, scope),
+                    key,
+                });
+            }
+            steps
+        }
         HarnessKind::Plugin(spec) => vec![PlanStep::Plugin {
             path: plugin_dir(spec, env, scope).join(spec.filename),
         }],
@@ -275,7 +342,11 @@ fn uninstall_jsonhook(
     let _locks = ResourceLocks::acquire(&[&dir, &settings])?;
     if settings.exists() {
         let mut value = load_settings(&settings)?;
-        if remove_from_hook_array(&mut value, spec.array_key, &format!("{}", dir.display())) {
+        let before = value.clone();
+        for key in ["PreToolUse", "PostToolUse", "Stop"] {
+            remove_from_hook_array(&mut value, key, &format!("{}", dir.display()));
+        }
+        if value != before {
             write_settings(&settings, &value)?;
         }
     }
@@ -302,8 +373,17 @@ pub fn status(h: &Harness, env: &AdapterEnv, scope: Scope) -> Result<HarnessStat
         HarnessKind::JsonHook(spec) => status_jsonhook(h.name, spec, env, scope, detected)?,
         HarnessKind::Plugin(spec) => status_plugin(spec, env, scope)?,
     };
+    let legacy_registration = match &h.kind {
+        HarnessKind::JsonHook(spec) => settings_has_marker(
+            &settings_path(spec, env, scope),
+            "PreToolUse",
+            &adapters_dir(env).join(h.name).to_string_lossy(),
+        )?,
+        HarnessKind::Plugin(_) => false,
+    };
     Ok(HarnessStatus {
         harness: h.name,
+        legacy_registration: legacy_registration.then_some("PreToolUse"),
         detected,
         installed,
         registered,
@@ -321,14 +401,50 @@ fn status_jsonhook(
 ) -> Result<(bool, bool, Option<bool>, Option<bool>)> {
     let dir = adapters_dir(env).join(name);
     let settings = settings_path(spec, env, scope);
-    let registered = settings_has_marker(&settings, spec.array_key, &format!("{}", dir.display()))?;
+    let mut registered = false;
+    for key in ["PreToolUse", "PostToolUse", "Stop"] {
+        registered |= settings_has_marker(&settings, key, &format!("{}", dir.display()))?;
+    }
     let installed = crate::filesystem::regular_file(&dir.join(spec.primary))?.is_some();
-    let expected: BTreeMap<String, String> = spec
+    let expected = spec
         .files
         .iter()
-        .map(|(n, b)| ((*n).to_string(), sha256_hex(b.as_bytes())))
-        .collect();
+        .map(|(name, source)| {
+            source
+                .read()
+                .map(|bytes| ((*name).to_string(), sha256_hex(&bytes)))
+        })
+        .collect::<Result<BTreeMap<_, _>>>();
+    let available = expected.is_ok();
+    let expected = expected.unwrap_or_else(|_| {
+        spec.files
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), String::new()))
+            .collect()
+    });
     let (intact, current) = sidecar_integrity(&dir, &expected)?;
+    let complete = settings_has_marker(&settings, "PostToolUse", &dir.to_string_lossy())?
+        && settings_has_marker(&settings, "Stop", &dir.to_string_lossy())?;
+    let value = load_settings(&settings)?;
+    let matches = spec
+        .manifest
+        .and_then(|source| hook_entries(source, &dir.join(spec.primary)).ok())
+        .is_some_and(|entries| {
+            entries.iter().all(|(event, expected)| {
+                value
+                    .get("hooks")
+                    .and_then(|hooks| hooks.get(event))
+                    .and_then(Value::as_array)
+                    .is_some_and(|groups| groups.contains(expected))
+            })
+        });
+    let current = if available {
+        current.map(|current| current && complete && matches)
+    } else if registered && !complete {
+        Some(false)
+    } else {
+        None
+    };
     Ok((installed, registered, intact, current))
 }
 
@@ -340,12 +456,14 @@ fn status_plugin(
     let dir = plugin_dir(spec, env, scope);
     let file = dir.join(spec.filename);
     let installed = crate::filesystem::regular_file(&file)?.is_some();
-    let mut expected = BTreeMap::new();
-    expected.insert(
+    let source = spec.source.read();
+    let available = source.is_ok();
+    let expected = BTreeMap::from([(
         spec.filename.to_string(),
-        sha256_hex(spec.source.as_bytes()),
-    );
+        source.map(|bytes| sha256_hex(&bytes)).unwrap_or_default(),
+    )]);
     let (intact, current) = sidecar_integrity(&dir, &expected)?;
+    let current = if available { current } else { None };
     // A retained ownership record identifies a broken installation even when
     // its auto-discovered primary file has been removed.
     let registered = installed || intact.is_some();
@@ -442,7 +560,7 @@ mod tests {
         let e = env(tmp.path());
         let harness = all_harnesses()
             .into_iter()
-            .find(|h| h.name == "codex")
+            .find(|h| h.name == "opencode")
             .unwrap();
         let out = install(&harness, &e, Scope::Global).unwrap();
         assert!(matches!(out.result, InstallResult::Skipped(_)));
@@ -470,11 +588,11 @@ mod tests {
             &std::fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap(),
         )
         .unwrap();
-        let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        let cmd = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
         assert!(cmd.contains("adapters/codex/hook.sh"));
-        assert!(cmd.ends_with("pre-tool-use"));
+        assert!(cmd.ends_with("post-tool-use"));
     }
 
     #[test]
@@ -505,11 +623,11 @@ mod tests {
 
         let settings: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_local).unwrap()).unwrap();
-        let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        let cmd = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
         assert!(cmd.contains("adapters/claude-code/hook.sh"));
-        assert!(cmd.ends_with("pre-tool-use"));
+        assert!(cmd.ends_with("post-tool-use"));
     }
 
     #[test]
@@ -548,7 +666,10 @@ mod tests {
             &std::fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            settings["hooks"]["PostToolUse"].as_array().unwrap().len(),
+            0
+        );
     }
 
     #[test]
@@ -686,7 +807,7 @@ mod tests {
         thread.join().unwrap();
         let value = load_settings(&settings).unwrap();
         assert_eq!(value["firstIronLintEdit"], true);
-        assert!(value["hooks"]["PreToolUse"].is_array());
+        assert!(value["hooks"]["PostToolUse"].is_array());
     }
 
     #[test]
@@ -712,14 +833,17 @@ mod tests {
         let dir = plugin_dir(spec, &e, Scope::Local);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(spec.filename);
-        std::fs::write(&file, spec.source).unwrap();
+        std::fs::write(&file, spec.source.read().unwrap()).unwrap();
         let result = install(&h, &e, Scope::Local).unwrap();
         assert!(
             matches!(result.result, InstallResult::Skipped(_)),
             "foreign content must stay foreign"
         );
         assert!(read_sidecar(&dir).unwrap().is_none());
-        assert_eq!(std::fs::read(&file).unwrap(), spec.source.as_bytes());
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            spec.source.read().unwrap().as_slice()
+        );
     }
 
     #[test]
@@ -742,7 +866,7 @@ mod tests {
         let mut h = harness("opencode");
         install(&h, &e, Scope::Local).unwrap();
         if let HarnessKind::Plugin(spec) = &mut h.kind {
-            spec.source = "// upgraded";
+            spec.source = crate::adapter::Source::Inline("// upgraded");
         }
         let again = install(&h, &e, Scope::Local).unwrap();
         assert!(
@@ -833,7 +957,7 @@ mod tests {
         let e = env(tmp.path());
         let mut h = harness("pi");
         install_skill(&h, &e, Scope::Local).unwrap();
-        h.skill.source = "// upgraded skill";
+        h.skill.source = crate::adapter::Source::Inline("// upgraded skill");
         let again = install_skill(&h, &e, Scope::Local).unwrap();
         assert!(matches!(again.result, InstallResult::Updated));
     }
@@ -884,10 +1008,13 @@ mod tests {
             .iter()
             .filter(|s| matches!(s, PlanStep::Hook { .. }))
             .count();
-        assert_eq!(hooks, 1, "claude-code ships hook.sh");
+        assert_eq!(
+            hooks, 4,
+            "claude-code ships its complete runtime hook package"
+        );
         assert!(steps
             .iter()
-            .any(|s| matches!(s, PlanStep::Patch { key, .. } if *key == "PreToolUse")));
+            .any(|s| matches!(s, PlanStep::Patch { key, .. } if *key == "PostToolUse")));
         assert!(steps.iter().any(|s| matches!(s, PlanStep::Skill { .. })));
     }
 
@@ -911,6 +1038,26 @@ mod tests {
             .join("ironlint/adapters/codex/hook.sh")
             .exists());
         assert!(!tmp.path().join(".codex/hooks.json").exists());
+    }
+
+    #[test]
+    fn plans_disclose_legacy_and_other_scope_registration_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("codex");
+        install(&h, &e, Scope::Global).unwrap();
+        let global = tmp.path().join(".codex/hooks.json");
+        let before = std::fs::read(&global).unwrap();
+        let steps = plan_install(&h, &e, Scope::Local);
+        for key in ["PreToolUse", "PostToolUse", "Stop"] {
+            assert!(steps.iter().any(|step| matches!(step,
+                PlanStep::Patch { path, key: actual } if *path == global && *actual == key)));
+            assert!(plan_uninstall(&h, &e, Scope::Local)
+                .iter()
+                .any(|step| matches!(step,
+                PlanStep::Patch { key: actual, .. } if *actual == key)));
+        }
+        assert_eq!(std::fs::read(&global).unwrap(), before);
     }
 
     #[test]

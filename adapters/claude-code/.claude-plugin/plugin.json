@@ -1,19 +1,10 @@
 {
-  "name": "ironlint",
-  "description": "Local CI for AI coding agents: a checks pipeline (files + run/steps) where any nonzero exit blocks the write, guarded by a trust allow-list. Claude Code adapter.",
-  "version": "0.12.1",
+  "name": "ironlint-claude-code",
+  "version": "0.1.0",
+  "description": "Run project checks after Claude Code edits and request repairs at Stop.",
   "author": {
     "name": "christopherarter"
   },
   "homepage": "https://github.com/ironlint/ironlint",
-  "repository": "https://github.com/ironlint/ironlint",
-  "license": "Apache-2.0",
-  "keywords": [
-    "lint",
-    "hooks",
-    "skills",
-    "code-review",
-    "pre-tool-use",
-    "ai-agents"
-  ]
+  "hooks": "./hooks/hooks.json"
 }

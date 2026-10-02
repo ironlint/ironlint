@@ -1,7 +1,7 @@
 use super::super::adapters::{adapter_check, check_adapters, hooks_row};
 use super::super::{CheckResult, Status};
 use super::adapter_env;
-use ironlint_core::adapter::{all_harnesses, install, HarnessStatus, Scope};
+use ironlint_adapters::{all_harnesses, install, HarnessStatus, Scope};
 use tempfile::tempdir;
 
 #[test]
@@ -40,6 +40,7 @@ fn check_adapters_reports_modified_pi_as_warn() {
 
 fn harness_status(detected: bool, installed: bool, registered: bool) -> HarnessStatus {
     HarnessStatus {
+        legacy_registration: None,
         harness: "codex",
         detected,
         installed,
@@ -60,6 +61,7 @@ fn adapter_check_reports_registered_but_absent_as_fail() {
     // registered in settings but artifact gone AND harness dir absent:
     // must still surface as a broken (Fail) row, not be skipped.
     let s = HarnessStatus {
+        legacy_registration: None,
         harness: "codex",
         detected: false,
         installed: false,

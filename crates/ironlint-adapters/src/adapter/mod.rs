@@ -3,6 +3,7 @@ mod json_settings;
 mod materialize;
 mod ops;
 mod ownership;
+mod package;
 mod plan;
 mod registry;
 
@@ -17,6 +18,7 @@ pub use ops::{
 };
 pub use ops::{plan_install, plan_uninstall};
 pub use ownership::pending_sidecar_path;
+pub use package::Source;
 pub use plan::PlanStep;
 pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME};
 

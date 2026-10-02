@@ -131,13 +131,170 @@ fn pi_uninstall_preserves_edited_plugin_and_reports_incomplete_cleanup() {
 }
 
 #[test]
-fn cleanup_only_adapter_cannot_be_newly_installed() {
+fn opencode_cleanup_only_adapter_cannot_be_newly_installed() {
     let (_tmp, home, project) = workspace();
+    ironlint(&home, &project)
+        .args(["init", "--hook-only", "--harness", "opencode", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "available: claude-code, codex, pi",
+        ));
+}
+
+#[test]
+fn runtime_pi_package_can_be_updated_after_the_binary_is_built() {
+    let (tmp, home, project) = workspace();
+    let packages = tmp.path().join("packages");
+    std::fs::create_dir_all(packages.join("pi/src")).unwrap();
+    std::fs::create_dir_all(packages.join("shared/ironlint-config")).unwrap();
+    std::fs::write(
+        packages.join("shared/ironlint-config/SKILL.md"),
+        "test authoring skill",
+    )
+    .unwrap();
+    let plugin = packages.join("pi/src/index.ts");
+    for text in ["// adapter version one\n", "// adapter version two\n"] {
+        std::fs::write(&plugin, text).unwrap();
+        ironlint(&home, &project)
+            .env("IRONLINT_ADAPTERS_ROOT", &packages)
+            .args(["init", "--hook-only", "--harness", "pi", "--yes"])
+            .assert()
+            .success();
+        assert_eq!(
+            std::fs::read_to_string(project.join(".pi/extensions/ironlint.ts")).unwrap(),
+            text
+        );
+    }
+}
+
+#[test]
+fn native_adapter_install_migrates_only_owned_entries_and_preserves_edits() {
+    for (name, settings_name) in [
+        ("codex", ".codex/hooks.json"),
+        ("claude-code", ".claude/settings.local.json"),
+    ] {
+        let (_tmp, home, project) = workspace();
+        let settings = project.join(settings_name);
+        let directory = home.join(".config/ironlint/adapters").join(name);
+        let marker = directory.join("hook.sh");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            serde_json::to_vec(&serde_json::json!({"hooks": {"PreToolUse": [
+            {"hooks": [{"type": "command", "command": format!("{} pre-tool-use", marker.display())},
+                       {"type": "command", "command": "my-existing-hook"}]}]}}))
+            .unwrap(),
+        )
+        .unwrap();
+        ironlint(&home, &project)
+            .args(["init", "--hook-only", "--harness", name, "--yes"])
+            .assert()
+            .success();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(
+            value["hooks"]["PreToolUse"][0]["hooks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "my-existing-hook"
+        );
+        assert!(value["hooks"]["PostToolUse"].is_array());
+        assert!(value["hooks"]["Stop"].is_array());
+        let runner = directory.join("hook.py");
+        std::fs::write(&runner, "# user edits\n").unwrap();
+        let before = std::fs::read(&settings).unwrap();
+        ironlint(&home, &project)
+            .args(["init", "--hook-only", "--harness", name, "--yes"])
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("preserved edited"));
+        assert_eq!(std::fs::read(&settings).unwrap(), before);
+        ironlint(&home, &project)
+            .args(["init", "--uninstall", "--harness", name, "--yes"])
+            .assert()
+            .code(3);
+        assert_eq!(std::fs::read_to_string(runner).unwrap(), "# user edits\n");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(value["hooks"]["PostToolUse"].as_array().unwrap().len(), 0);
+        assert_eq!(value["hooks"]["Stop"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            value["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "my-existing-hook"
+        );
+    }
+}
+
+#[test]
+fn replacing_shared_hook_files_also_migrates_owned_global_registration() {
+    let (_tmp, home, project) = workspace();
+    let settings = home.join(".codex/hooks.json");
+    let marker = home.join(".config/ironlint/adapters/codex/hook.sh");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        serde_json::to_vec(&serde_json::json!({"hooks": {"PreToolUse": [
+        {"hooks": [{"type": "command", "command": format!("{} pre-tool-use", marker.display())}]},
+        {"hooks": [{"type": "command", "command": "foreign-global-hook"}]}]}}))
+        .unwrap(),
+    )
+    .unwrap();
     ironlint(&home, &project)
         .args(["init", "--hook-only", "--harness", "codex", "--yes"])
         .assert()
-        .failure()
-        .stderr(predicates::str::contains("available: pi"));
+        .success();
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    assert_eq!(value["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "foreign-global-hook"
+    );
+    assert!(value["hooks"]["PostToolUse"].is_array());
+    assert!(value["hooks"]["Stop"].is_array());
+}
+
+#[test]
+fn doctor_detects_a_missing_stop_registration_without_requiring_package_sources() {
+    let (tmp, home, project) = workspace();
+    ironlint(&home, &project)
+        .args(["init", "--harness", "codex", "--yes"])
+        .assert()
+        .success();
+    let settings = project.join(".codex/hooks.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    value["hooks"].as_object_mut().unwrap().remove("Stop");
+    std::fs::write(&settings, serde_json::to_vec(&value).unwrap()).unwrap();
+    let output = ironlint(&home, &project)
+        .env(
+            "IRONLINT_ADAPTERS_ROOT",
+            tmp.path().join("missing-packages"),
+        )
+        .args(["doctor", "--format", "json"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = report["checks"].as_array().unwrap();
+    let native = rows
+        .iter()
+        .find(|row| row["name"] == "codex" && row["detail"].as_str().unwrap().contains("local"))
+        .unwrap();
+    assert_eq!(native["status"], "warn", "{report}");
+    ironlint(&home, &project)
+        .env(
+            "IRONLINT_ADAPTERS_ROOT",
+            tmp.path().join("missing-packages"),
+        )
+        .args(["init", "--uninstall", "--harness", "codex", "--yes"])
+        .assert()
+        .success();
 }
 
 #[test]
