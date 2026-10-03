@@ -1,5 +1,11 @@
 # Current work
 
+The [native completion enforcement plan](2026-10-02-native-completion-enforcement.md)
+has completed N0–N3 for explicit Claude Code and Codex controllers, with pinned
+macOS/Linux runtime evidence, bounded repair, and captured candidate acceptance.
+Ordinary native sessions retain feedback hooks. The plan records exact support
+limits; live model utility and package publication remain separate work.
+
 The [coding-harness compliance plan](2026-10-01-harness-compliance.md) has an
 integrated Pi completion/repair runner, actionable feedback, deterministic
 real-runtime scenarios, and tested check examples. H3 live-model comparison and
@@ -30,7 +36,7 @@ authorized work that does not fit the active v1 scope.
 
 ## Deferred
 
-No additional work beyond the compliance plan is queued. Add only deliberately
+No additional deferred work is queued. Add only deliberately
 requested ideas here, as one dated line naming the work and when it would be worth
 doing. Deferred items do not become release requirements without an explicit
 scope decision.

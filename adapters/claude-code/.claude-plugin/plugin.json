@@ -1,6 +1,6 @@
 {
   "name": "ironlint-claude-code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run project checks after Claude Code edits and request repairs at Stop.",
   "author": {
     "name": "christopherarter"

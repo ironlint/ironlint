@@ -9,16 +9,20 @@ inputs. Each harness has its own version and compatibility record.
 crates/ironlint-core/       evaluator
 crates/ironlint-cli/        CLI and read-only diagnostics
 crates/ironlint-adapters/   installation, recovery, ownership
-adapters/shared/           bounded hook runner, packaging, authoring skill
+adapters/shared/           bounded hooks/completion, packaging, authoring skill
 adapters/pi/               Pi package and controlled completion
-adapters/codex/            Codex package and native hooks
-adapters/claude-code/      Claude Code package and native hooks
+adapters/codex/            Codex package, native hooks, explicit completion
+adapters/claude-code/      Claude Code package, native hooks, explicit completion
 ```
 
 Codex and Claude Code use native plugin manifests plus hooks/hooks.json.
 Their shared Python code is copied into self-contained archives during packaging;
 source files remain single-source under shared/hooks. Pi retains its npm package.
 The Rust installer consumes the same native hook manifests at installation time.
+Explicit native completion launchers are included in the extracted packages;
+`ironlint init` continues to register only the existing feedback hooks. Their
+shared TypeScript runtime ships the exact canonical Pi candidate/acceptance
+modules, without a Pi SDK dependency or a second candidate definition.
 All packages depend on the stable v1 CLI/schema-7 contract and require evaluator
 1.1.0+ for cooperative cancellation.
 
@@ -67,9 +71,12 @@ The current release artifacts and catalog URL are prepared locally. No tag,
 release upload, or marketplace installation is claimed. Publication destination
 still awaits the operator's choice.
 
-Run native contract/package tests with Python unittest and Pi tests with npm.
+Run native contract/package tests with Python unittest, controlled native tests
+with Node's test runner, and Pi tests with npm.
 `scripts/ci-adapters.sh` builds a local evaluator, then runs both suites with
 isolated policy consent. Live harness/model qualification belongs to each
 adapter's compatibility record, outside the core release gate. Native Stop
-hooks are local repair aids; immutable candidate completion remains separately
-qualified under Pi's controlled runner.
+hooks are local repair aids. Explicit candidate completion uses separately
+qualified controllers: [Pi](pi/completion.md), [Codex](codex/completion.md), and
+[Claude Code](claude-code/completion.md). A native hook callback fixture cannot
+qualify a controller's runtime settlement or terminal result.

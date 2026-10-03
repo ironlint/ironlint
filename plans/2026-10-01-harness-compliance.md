@@ -4,6 +4,13 @@ Status: **Implementation integrated; live-model qualification remains pending.**
 Date: 2026-10-01.
 Baseline: `feature/durability-simplification` at `dd04068f3092e7d87ded98b99ba01c8f569f17b6`.
 
+The separately requested
+[native completion implementation](2026-10-02-native-completion-enforcement.md)
+owns the Claude Code/Codex completion follow-up. Its explicit controllers and
+pinned real-runtime evidence are separate from the existing feedback/Stop-repair
+packages described below. Ordinary native sessions remain feedback routes.
+Pi's pending H3/H5 work and live model utility measurements remain here.
+
 ## Outcome and scope
 
 Make following executable project rules a property of the coding workflow:

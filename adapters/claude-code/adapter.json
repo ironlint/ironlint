@@ -1,15 +1,16 @@
 {
   "name": "claude-code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "ironlint": ">=1.1.0",
   "harness_baseline": "2.1.207",
   "capabilities": [
     "change-feedback",
-    "stop-repair"
+    "stop-repair",
+    "explicit-controlled-completion"
   ],
   "platforms": [
     "linux",
     "darwin"
   ],
-  "runtime": "python3 >=3.9"
+  "runtime": "python3 >=3.9; node >=22.6 for explicit completion"
 }

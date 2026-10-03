@@ -116,6 +116,17 @@ missing consent, and background work report incomplete acceptance. These hooks
 observe the mutable workspace and remain local workflow aids, without immutable
 candidate or publication authority guarantees.
 
+Explicit `ironlint-codex-complete` and `ironlint-claude-complete` launchers add an
+adapter-owned terminal result without replacing those native sessions. Shared
+TypeScript orchestration owns synchronous runtime/evaluator processes, a total
+monotonic deadline, workspace serialization, bounded repair, and cancellation.
+It reuses Pi's canonical candidate capture and strict acceptance classifier.
+Only a freshly evaluated, unchanged artifact can return `complete`; errors and
+exhaustion return `incomplete`. Host version/configuration and settlement checks
+live in separate Codex/Claude mappings. Exact runtime qualification and remaining
+limits are recorded in each adapter's completion evidence, separately from native
+hook feedback and the v1 independent enforcement contract.
+
 ## Installation writes
 
 Owned replacements use an exclusively created sibling temporary file, complete
@@ -143,5 +154,6 @@ ownership, unreadable registrations, and inactive Git hooks without executing th
 | Adapter ownership and materialization | `crates/ironlint-adapters/src/adapter/` |
 | Setup, inspection, diagnostics, and updater | `crates/ironlint-cli/src/commands/` |
 | Native hook execution and strict result validation | `adapters/shared/hooks/` |
+| Explicit native completion ownership and host mappings | `adapters/shared/completion/` |
 | Pi feedback subprocess lifecycle | `adapters/pi/src/index.ts` |
 | Pi controlled completion and candidate binding | `adapters/pi/src/completion.ts`, `candidate.ts` |

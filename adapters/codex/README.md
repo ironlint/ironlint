@@ -1,6 +1,7 @@
 # IronLint — Codex adapter
 
-Package 0.1.0 provides post-edit feedback and fresh full acceptance at Stop.
+Package 0.2.0 provides post-edit feedback, fresh full acceptance at Stop, and an
+explicit [controlled completion launcher](completion.md).
 It uses the v1 IronLint CLI, not the removed pre-edit or LLM evaluator paths.
 
 ## Install
@@ -49,6 +50,12 @@ inside the evaluator stays closed. IRONLINT_BIN can select an owner-configured
 binary outside hook payloads; the default is ironlint on PATH.
 
 ## Limits and compatibility
+
+Ordinary native sessions retain the hook behavior above. The explicit
+`bin/ironlint-codex-complete` path separately owns a bounded terminal result and
+accepted candidate artifact. Its pinned runtime/model and real replay evidence
+are recorded in [completion evidence](completion-evidence.md). `ironlint init`
+does not silently switch sessions to that path.
 
 This is a local workflow aid. It evaluates the mutable hook cwd and does not
 bind success to an immutable candidate, isolate rule execution, or establish

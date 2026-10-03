@@ -22,11 +22,17 @@ export PYTHONDONTWRITEBYTECODE=1
 echo "ci-adapters: native hook contracts and independent packages (python3)…"
 python3 -m unittest discover -s adapters/shared/test -v
 
-echo "ci-adapters: pi suite (node)…"
 if ! command -v node >/dev/null 2>&1; then
   echo "ci-adapters: node is required for the pi adapter suite — install it" >&2
   exit 1
 fi
+echo "ci-adapters: controlled native completion (node)…"
+node --experimental-strip-types --test --test-concurrency=1 adapters/shared/completion/test/*.test.ts
+if [ -n "${IRONLINT_CLAUDE_RUNTIME:-}" ]; then
+  python3 adapters/shared/completion/test/claude-runtime.py \
+    --runtime "$IRONLINT_CLAUDE_RUNTIME" --node "$(command -v node)" --ironlint "$IRONLINT_TEST_BIN"
+fi
+echo "ci-adapters: pi suite (node)…"
 (cd adapters/pi && npm test)
 bash scripts/test-verify-acceptance.sh
 bash scripts/test-check-recipes.sh

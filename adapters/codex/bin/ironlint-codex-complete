@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+here=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+runtime="$here/shared/completion/cli.ts"
+if [ ! -f "$runtime" ]; then runtime="$here/../shared/completion/cli.ts"; fi
+exec node --experimental-strip-types "$runtime" codex "$@"
